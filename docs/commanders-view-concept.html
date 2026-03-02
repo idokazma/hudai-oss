@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, height=1080">
+<title>The Commander's View</title>
+<style>
+  /* Using system fonts as fallback */
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    background: #0a0e17;
+    font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+    color: #c8d6e5;
+  }
+
+  .hud {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    grid-template-rows: 64px 1fr 200px;
+    gap: 0;
+  }
+
+  /* ── TOP BAR ── */
+  .top-bar {
+    grid-column: 1 / -1;
+    background: linear-gradient(180deg, rgba(12,18,32,0.98) 0%, rgba(12,18,32,0.85) 100%);
+    border-bottom: 1px solid rgba(58,124,165,0.3);
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    gap: 32px;
+    z-index: 10;
+  }
+
+  .top-bar .logo {
+    font-family: 'Impact', 'Arial Black', sans-serif; text-transform: uppercase;
+    font-weight: 700;
+    font-size: 16px;
+    color: #3a7ca5;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .top-bar .logo span { color: #d4763c; }
+
+  .resource-bars {
+    display: flex;
+    gap: 24px;
+    flex: 1;
+    justify-content: center;
+  }
+
+  .resource {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .resource .label {
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    color: #5a6a7a;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    min-width: 70px;
+  }
+
+  .resource .bar-track {
+    width: 120px;
+    height: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .resource .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+
+  .resource .val {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    min-width: 36px;
+    text-align: right;
+  }
+
+  .top-bar .task-label {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: #3a7ca5;
+    background: rgba(58,124,165,0.1);
+    border: 1px solid rgba(58,124,165,0.25);
+    padding: 6px 14px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  /* ── LEFT PANEL: TASK QUEUE ── */
+  .left-panel {
+    background: linear-gradient(90deg, rgba(12,18,32,0.95) 0%, rgba(12,18,32,0.8) 100%);
+    border-right: 1px solid rgba(58,124,165,0.15);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
+  }
+
+  .panel-title {
+    font-family: 'Impact', 'Arial Black', sans-serif; text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: #3a7ca5;
+    text-transform: uppercase;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(58,124,165,0.2);
+  }
+
+  .task-item {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 6px;
+    padding: 10px 12px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .task-item.active {
+    border-color: rgba(58,124,165,0.5);
+    background: rgba(58,124,165,0.08);
+  }
+
+  .task-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: #3a7ca5;
+    border-radius: 3px 0 0 3px;
+  }
+
+  .task-item.done { opacity: 0.4; }
+
+  .task-item .task-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #dce3eb;
+    margin-bottom: 3px;
+  }
+
+  .task-item.done .task-name {
+    text-decoration: line-through;
+    color: #5a6a7a;
+  }
+
+  .task-item .task-detail {
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    color: #5a6a7a;
+  }
+
+  .task-item .task-status {
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-top: 6px;
+  }
+
+  .status-active { color: #3a7ca5; }
+  .status-done { color: #2d6a4f; }
+  .status-queued { color: #5a6a7a; }
+
+  .task-progress {
+    margin-top: 6px;
+    height: 2px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+
+  .task-progress .fill {
+    height: 100%;
+    background: #3a7ca5;
+    border-radius: 1px;
+    animation: progress-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes progress-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  /* ── CENTER: CODEBASE MAP ── */
+  .center-map {
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse at 45% 40%, rgba(58,124,165,0.06) 0%, transparent 60%),
+      radial-gradient(ellipse at 70% 65%, rgba(212,118,60,0.04) 0%, transparent 50%),
+      #0c1220;
+  }
+
+  .center-map canvas { display: block; }
+
+  .map-overlay-label {
+    position: absolute;
+    font-family: 'Impact', 'Arial Black', sans-serif; text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: rgba(58,124,165,0.35);
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  .scope-boundary {
+    position: absolute;
+    border: 1.5px dashed rgba(58,124,165,0.35);
+    border-radius: 20px;
+    pointer-events: none;
+  }
+
+  .scope-boundary.warning {
+    border-color: rgba(212,118,60,0.5);
+    box-shadow: 0 0 30px rgba(212,118,60,0.08);
+  }
+
+  .scope-label {
+    position: absolute;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 3px;
+    top: -10px;
+    left: 16px;
+  }
+
+  .scope-boundary:not(.warning) .scope-label {
+    color: #3a7ca5;
+    background: rgba(12,18,32,0.9);
+  }
+
+  .scope-boundary.warning .scope-label {
+    color: #d4763c;
+    background: rgba(12,18,32,0.9);
+  }
+
+  .agent-spotlight {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(58,124,165,0.25) 0%, transparent 70%);
+    transform: translate(-50%, -50%);
+    animation: spotlight-pulse 3s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  @keyframes spotlight-pulse {
+    0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    50% { transform: translate(-50%, -50%) scale(1.3); opacity: 0.6; }
+  }
+
+  .agent-icon {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #3a7ca5;
+    border: 2px solid #5bb5e0;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    box-shadow: 0 0 12px rgba(58,124,165,0.6);
+  }
+
+  .agent-icon.secondary {
+    background: #d4763c;
+    border-color: #e8945c;
+    box-shadow: 0 0 12px rgba(212,118,60,0.6);
+  }
+
+  .agent-label {
+    position: absolute;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    color: #5bb5e0;
+    transform: translate(-50%, 0);
+    white-space: nowrap;
+    z-index: 5;
+  }
+
+  .agent-label.secondary { color: #e8945c; }
+
+  /* ── RIGHT PANEL: ALERTS + DECISIONS ── */
+  .right-panel {
+    background: linear-gradient(270deg, rgba(12,18,32,0.95) 0%, rgba(12,18,32,0.8) 100%);
+    border-left: 1px solid rgba(58,124,165,0.15);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow: hidden;
+  }
+
+  .alert-item {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 6px;
+    padding: 10px 12px;
+    position: relative;
+  }
+
+  .alert-item::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    border-radius: 3px 0 0 3px;
+  }
+
+  .alert-item.info::before { background: #3a7ca5; }
+  .alert-item.warning::before { background: #d4763c; }
+  .alert-item.success::before { background: #2d6a4f; }
+  .alert-item.error::before { background: #c0392b; }
+
+  .alert-item .alert-type {
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .alert-item.info .alert-type { color: #3a7ca5; }
+  .alert-item.warning .alert-type { color: #d4763c; }
+  .alert-item.success .alert-type { color: #2d6a4f; }
+  .alert-item.error .alert-type { color: #c0392b; }
+
+  .alert-item .alert-msg {
+    font-size: 12px;
+    color: #9aa8b8;
+    line-height: 1.4;
+  }
+
+  .alert-item .alert-time {
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    color: #3a4a5a;
+    margin-top: 4px;
+  }
+
+  .decision-node {
+    background: rgba(212,118,60,0.06);
+    border: 1px solid rgba(212,118,60,0.25);
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .decision-node .dec-title {
+    font-family: 'Impact', 'Arial Black', sans-serif; text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: #d4763c;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .decision-node .dec-question {
+    font-size: 13px;
+    color: #dce3eb;
+    margin-bottom: 10px;
+    font-weight: 500;
+  }
+
+  .dec-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .dec-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.02);
+  }
+
+  .dec-option.chosen {
+    border-color: rgba(58,124,165,0.4);
+    background: rgba(58,124,165,0.08);
+  }
+
+  .dec-option .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid #5a6a7a;
+    flex-shrink: 0;
+  }
+
+  .dec-option.chosen .dot {
+    border-color: #3a7ca5;
+    background: #3a7ca5;
+  }
+
+  .dec-option .opt-label { color: #9aa8b8; }
+  .dec-option.chosen .opt-label { color: #dce3eb; }
+
+  /* ── BOTTOM: TIMELINE ── */
+  .bottom-timeline {
+    grid-column: 1 / -1;
+    background: linear-gradient(0deg, rgba(12,18,32,0.98) 0%, rgba(12,18,32,0.85) 100%);
+    border-top: 1px solid rgba(58,124,165,0.2);
+    padding: 16px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 10;
+  }
+
+  .timeline-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .timeline-header .panel-title { border: none; padding: 0; }
+
+  .timeline-time {
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    color: #5a6a7a;
+  }
+
+  .timeline-track {
+    display: flex;
+    gap: 3px;
+    align-items: flex-end;
+    height: 110px;
+    padding-top: 20px;
+    position: relative;
+  }
+
+  .timeline-block {
+    flex-shrink: 0;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 4px 6px;
+    position: relative;
+    overflow: hidden;
+    min-width: 28px;
+  }
+
+  .timeline-block .tl-label {
+    font-family: 'Courier New', monospace;
+    font-size: 8px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    white-space: nowrap;
+    opacity: 0.7;
+  }
+
+  .tb-read {
+    background: rgba(58,124,165,0.2);
+    border: 1px solid rgba(58,124,165,0.3);
+    height: 40px;
+  }
+  .tb-read .tl-label { color: #3a7ca5; }
+
+  .tb-edit {
+    background: rgba(46,204,113,0.15);
+    border: 1px solid rgba(46,204,113,0.3);
+    height: 55px;
+  }
+  .tb-edit .tl-label { color: #2ecc71; }
+
+  .tb-think {
+    background: rgba(155,89,182,0.15);
+    border: 1px solid rgba(155,89,182,0.3);
+    height: 35px;
+  }
+  .tb-think .tl-label { color: #9b59b6; }
+
+  .tb-test {
+    background: rgba(212,118,60,0.15);
+    border: 1px solid rgba(212,118,60,0.3);
+    height: 48px;
+  }
+  .tb-test .tl-label { color: #d4763c; }
+
+  .tb-bash {
+    background: rgba(241,196,15,0.12);
+    border: 1px solid rgba(241,196,15,0.25);
+    height: 30px;
+  }
+  .tb-bash .tl-label { color: #f1c40f; }
+
+  .tb-search {
+    background: rgba(26,188,156,0.15);
+    border: 1px solid rgba(26,188,156,0.3);
+    height: 38px;
+  }
+  .tb-search .tl-label { color: #1abc9c; }
+
+  .tb-active {
+    box-shadow: 0 0 12px rgba(58,124,165,0.3);
+    animation: block-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes block-glow {
+    0%, 100% { box-shadow: 0 0 12px rgba(58,124,165,0.3); }
+    50% { box-shadow: 0 0 20px rgba(58,124,165,0.5); }
+  }
+
+  .timeline-legend {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    padding-top: 4px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    color: #5a6a7a;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+  }
+
+  /* ── MINIMAP (bottom-right of center) ── */
+  .minimap {
+    position: absolute;
+    bottom: 216px;
+    right: 336px;
+    width: 160px;
+    height: 120px;
+    background: rgba(12,18,32,0.9);
+    border: 1px solid rgba(58,124,165,0.3);
+    border-radius: 6px;
+    overflow: hidden;
+    z-index: 10;
+  }
+
+  .minimap-label {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 8px;
+    color: rgba(58,124,165,0.5);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .minimap canvas { display: block; }
+
+  /* Viewport rect on minimap */
+  .minimap-viewport {
+    position: absolute;
+    border: 1px solid rgba(58,124,165,0.6);
+    background: rgba(58,124,165,0.05);
+    border-radius: 2px;
+  }
+
+  /* ── Grid lines in center ── */
+  .grid-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.04;
+    background-image:
+      linear-gradient(rgba(58,124,165,1) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(58,124,165,1) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  /* ── CONCEPT TITLE OVERLAY ── */
+  .concept-title {
+    position: absolute;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    z-index: 20;
+    pointer-events: none;
+    opacity: 0.12;
+  }
+
+  .concept-title h1 {
+    font-family: 'Impact', 'Arial Black', sans-serif; text-transform: uppercase;
+    font-size: 48px;
+    font-weight: 900;
+    color: #3a7ca5;
+    letter-spacing: 8px;
+    text-transform: uppercase;
+  }
+
+  .concept-title p {
+    font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+    font-size: 16px;
+    color: #5a6a7a;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="hud">
+  <!-- TOP BAR -->
+  <div class="top-bar">
+    <div class="logo">Commander<span>'</span>s View</div>
+    <div class="resource-bars">
+      <div class="resource">
+        <span class="label">Context</span>
+        <div class="bar-track"><div class="bar-fill" style="width:62%;background:linear-gradient(90deg,#3a7ca5,#5bb5e0)"></div></div>
+        <span class="val" style="color:#5bb5e0">62%</span>
+      </div>
+      <div class="resource">
+        <span class="label">Tokens</span>
+        <div class="bar-track"><div class="bar-fill" style="width:34%;background:linear-gradient(90deg,#2d6a4f,#52b788)"></div></div>
+        <span class="val" style="color:#52b788">34%</span>
+      </div>
+      <div class="resource">
+        <span class="label">Tests</span>
+        <div class="bar-track"><div class="bar-fill" style="width:88%;background:linear-gradient(90deg,#2d6a4f,#52b788)"></div></div>
+        <span class="val" style="color:#52b788">88%</span>
+      </div>
+      <div class="resource">
+        <span class="label">Elapsed</span>
+        <div class="bar-track"><div class="bar-fill" style="width:45%;background:linear-gradient(90deg,#5a6a7a,#8899aa)"></div></div>
+        <span class="val" style="color:#8899aa">4:32</span>
+      </div>
+    </div>
+    <div class="task-label">▶ Add OAuth2 authentication to API routes</div>
+  </div>
+
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+    <div class="panel-title">Build Queue</div>
+
+    <div class="task-item done">
+      <div class="task-name">Analyze existing auth</div>
+      <div class="task-detail">Read 6 files · auth/, middleware/</div>
+      <div class="task-status status-done">✓ Complete</div>
+    </div>
+
+    <div class="task-item done">
+      <div class="task-name">Install dependencies</div>
+      <div class="task-detail">passport, passport-oauth2</div>
+      <div class="task-status status-done">✓ Complete</div>
+    </div>
+
+    <div class="task-item active">
+      <div class="task-name">Create OAuth middleware</div>
+      <div class="task-detail">middleware/oauth.ts · Writing handler</div>
+      <div class="task-status status-active">● In Progress</div>
+      <div class="task-progress"><div class="fill" style="width:65%"></div></div>
+    </div>
+
+    <div class="task-item">
+      <div class="task-name">Update route guards</div>
+      <div class="task-detail">routes/api.ts, routes/admin.ts</div>
+      <div class="task-status status-queued">◯ Queued</div>
+    </div>
+
+    <div class="task-item">
+      <div class="task-name">Add token refresh logic</div>
+      <div class="task-detail">services/auth.ts</div>
+      <div class="task-status status-queued">◯ Queued</div>
+    </div>
+
+    <div class="task-item">
+      <div class="task-name">Write integration tests</div>
+      <div class="task-detail">tests/auth.test.ts</div>
+      <div class="task-status status-queued">◯ Queued</div>
+    </div>
+
+    <div style="margin-top:auto;padding-top:12px;border-top:1px solid rgba(58,124,165,0.15)">
+      <div class="panel-title" style="margin-bottom:8px">Agent Squad</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#3a7ca5;box-shadow:0 0 6px rgba(58,124,165,0.5)"></div>
+        <span style="font-family:'Courier New',monospace;font-size:11px;color:#5bb5e0">Agent α · Backend</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#d4763c;box-shadow:0 0 6px rgba(212,118,60,0.5)"></div>
+        <span style="font-family:'Courier New',monospace;font-size:11px;color:#e8945c">Agent β · Frontend</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER MAP -->
+  <div class="center-map" id="centerMap">
+    <div class="grid-overlay"></div>
+    <canvas id="mapCanvas"></canvas>
+
+    <div class="concept-title">
+      <h1>The Commander's View</h1>
+      <p>Visual-First Agent IDE</p>
+    </div>
+
+    <!-- Scope boundaries -->
+    <div class="scope-boundary" style="top:120px;left:180px;width:420px;height:340px">
+      <div class="scope-label">Planned Scope</div>
+    </div>
+    <div class="scope-boundary warning" style="top:260px;left:540px;width:220px;height:200px">
+      <div class="scope-label">⚠ Scope Expanding</div>
+    </div>
+
+    <!-- Agent spotlights -->
+    <div class="agent-spotlight" style="top:280px;left:380px"></div>
+    <div class="agent-icon" style="top:280px;left:380px"></div>
+    <div class="agent-label" style="top:296px;left:380px">Agent α</div>
+
+    <div class="agent-spotlight" style="top:360px;left:680px;background:radial-gradient(circle,rgba(212,118,60,0.2) 0%,transparent 70%)"></div>
+    <div class="agent-icon secondary" style="top:360px;left:680px"></div>
+    <div class="agent-label secondary" style="top:376px;left:680px">Agent β</div>
+
+    <!-- Module labels -->
+    <div class="map-overlay-label" style="top:145px;left:210px">auth/</div>
+    <div class="map-overlay-label" style="top:185px;left:380px">middleware/</div>
+    <div class="map-overlay-label" style="top:345px;left:240px">routes/</div>
+    <div class="map-overlay-label" style="top:280px;left:580px">services/</div>
+    <div class="map-overlay-label" style="top:390px;left:580px">components/</div>
+    <div class="map-overlay-label" style="top:160px;left:580px;color:rgba(58,124,165,0.15)">░░ models/ ░░</div>
+    <div class="map-overlay-label" style="top:440px;left:360px;color:rgba(58,124,165,0.15)">░░ utils/ ░░</div>
+
+    <!-- Minimap -->
+    <div class="minimap">
+      <div class="minimap-label">Minimap</div>
+      <canvas id="minimapCanvas" width="160" height="120"></canvas>
+      <div class="minimap-viewport" style="top:20px;left:30px;width:50px;height:40px"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <div class="panel-title">Alerts</div>
+
+    <div class="alert-item warning">
+      <div class="alert-type">⚠ Scope Alert</div>
+      <div class="alert-msg">Agent β expanding into <strong>services/db.ts</strong> — outside planned boundary</div>
+      <div class="alert-time">12s ago</div>
+    </div>
+
+    <div class="alert-item success">
+      <div class="alert-type">✓ Task Complete</div>
+      <div class="alert-msg">Dependencies installed. passport-oauth2 v2.1 ready.</div>
+      <div class="alert-time">1m ago</div>
+    </div>
+
+    <div class="alert-item info">
+      <div class="alert-type">◆ Discovery</div>
+      <div class="alert-msg">Found existing session middleware in <strong>middleware/session.ts</strong> — compatible pattern</div>
+      <div class="alert-time">2m ago</div>
+    </div>
+
+    <div class="alert-item error">
+      <div class="alert-type">✕ Test Failed</div>
+      <div class="alert-msg"><strong>auth.test.ts:47</strong> — Token validation expects string, received object</div>
+      <div class="alert-time">3m ago</div>
+    </div>
+
+    <div style="margin-top:auto">
+      <div class="decision-node">
+        <div class="dec-title">◆ Decision Point</div>
+        <div class="dec-question">Session storage strategy?</div>
+        <div class="dec-options">
+          <div class="dec-option chosen">
+            <div class="dot"></div>
+            <span class="opt-label">Redis — persistent, shared across instances</span>
+          </div>
+          <div class="dec-option">
+            <div class="dot"></div>
+            <span class="opt-label">In-memory — simpler, no dependency</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM TIMELINE -->
+  <div class="bottom-timeline">
+    <div class="timeline-header">
+      <div class="panel-title">Activity Timeline</div>
+      <div class="timeline-time">00:00 ——————————————————————————————————————————————— 04:32</div>
+    </div>
+    <div class="timeline-track">
+      <div class="timeline-block tb-read" style="width:40px;height:35px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-read" style="width:35px;height:40px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-read" style="width:50px;height:38px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-think" style="width:60px;height:45px"><span class="tl-label">think</span></div>
+      <div class="timeline-block tb-read" style="width:30px;height:32px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-read" style="width:35px;height:36px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-think" style="width:45px;height:40px"><span class="tl-label">plan</span></div>
+      <div class="timeline-block tb-bash" style="width:65px;height:28px"><span class="tl-label">npm install</span></div>
+      <div class="timeline-block tb-read" style="width:30px;height:30px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-think" style="width:40px;height:55px"><span class="tl-label">think</span></div>
+      <div class="timeline-block tb-edit" style="width:70px;height:60px"><span class="tl-label">edit</span></div>
+      <div class="timeline-block tb-read" style="width:28px;height:28px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-edit" style="width:55px;height:50px"><span class="tl-label">edit</span></div>
+      <div class="timeline-block tb-test" style="width:45px;height:42px"><span class="tl-label">test</span></div>
+      <div class="timeline-block tb-think" style="width:35px;height:38px"><span class="tl-label">think</span></div>
+      <div class="timeline-block tb-edit" style="width:60px;height:55px"><span class="tl-label">edit</span></div>
+      <div class="timeline-block tb-search" style="width:40px;height:34px"><span class="tl-label">grep</span></div>
+      <div class="timeline-block tb-read" style="width:32px;height:30px"><span class="tl-label">read</span></div>
+      <div class="timeline-block tb-edit" style="width:50px;height:48px"><span class="tl-label">edit</span></div>
+      <div class="timeline-block tb-test" style="width:48px;height:55px"><span class="tl-label">test</span></div>
+      <div class="timeline-block tb-edit" style="width:45px;height:44px"><span class="tl-label">edit</span></div>
+      <div class="timeline-block tb-test" style="width:42px;height:40px"><span class="tl-label">test</span></div>
+      <div class="timeline-block tb-edit tb-active" style="width:55px;height:58px"><span class="tl-label">edit ●</span></div>
+    </div>
+    <div class="timeline-legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#3a7ca5"></div>Read</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#2ecc71"></div>Edit</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#9b59b6"></div>Think</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#d4763c"></div>Test</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#f1c40f"></div>Bash</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#1abc9c"></div>Search</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── CODEBASE MAP: Draw nodes and edges ──
+const mapEl = document.getElementById('centerMap');
+const canvas = document.getElementById('mapCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = mapEl.offsetWidth;
+canvas.height = mapEl.offsetHeight;
+
+// File nodes with positions, sizes, and activity states
+const nodes = [
+  // Auth cluster
+  { x: 260, y: 170, r: 18, label: 'auth.ts', heat: 0.9, group: 'auth' },
+  { x: 310, y: 210, r: 14, label: 'oauth.ts', heat: 1.0, group: 'auth', active: true },
+  { x: 230, y: 230, r: 12, label: 'jwt.ts', heat: 0.5, group: 'auth' },
+  { x: 285, y: 260, r: 10, label: 'types.ts', heat: 0.3, group: 'auth' },
+
+  // Middleware cluster
+  { x: 400, y: 200, r: 16, label: 'session.ts', heat: 0.6, group: 'mid' },
+  { x: 440, y: 240, r: 14, label: 'cors.ts', heat: 0.2, group: 'mid' },
+  { x: 380, y: 260, r: 11, label: 'logger.ts', heat: 0.1, group: 'mid' },
+
+  // Routes cluster
+  { x: 280, y: 370, r: 16, label: 'api.ts', heat: 0.4, group: 'routes' },
+  { x: 340, y: 400, r: 14, label: 'admin.ts', heat: 0.3, group: 'routes' },
+  { x: 240, y: 410, r: 10, label: 'health.ts', heat: 0.0, group: 'routes' },
+
+  // Services cluster
+  { x: 620, y: 300, r: 15, label: 'auth.svc.ts', heat: 0.4, group: 'svc' },
+  { x: 670, y: 340, r: 14, label: 'db.ts', heat: 0.7, group: 'svc', warning: true },
+  { x: 610, y: 360, r: 10, label: 'cache.ts', heat: 0.3, group: 'svc' },
+
+  // Components (frontend agent territory)
+  { x: 640, y: 420, r: 13, label: 'Login.tsx', heat: 0.6, group: 'comp', secondary: true },
+  { x: 700, y: 400, r: 11, label: 'Auth.tsx', heat: 0.5, group: 'comp', secondary: true },
+  { x: 680, y: 450, r: 9, label: 'Token.tsx', heat: 0.2, group: 'comp', secondary: true },
+
+  // Fog of war nodes (dim)
+  { x: 620, y: 180, r: 10, label: 'User.ts', heat: 0, group: 'fog', fog: true },
+  { x: 660, y: 200, r: 8, label: 'Post.ts', heat: 0, group: 'fog', fog: true },
+  { x: 580, y: 210, r: 9, label: 'Comment.ts', heat: 0, group: 'fog', fog: true },
+  { x: 400, y: 460, r: 9, label: 'helpers.ts', heat: 0, group: 'fog', fog: true },
+  { x: 450, y: 440, r: 8, label: 'format.ts', heat: 0, group: 'fog', fog: true },
+  { x: 480, y: 480, r: 7, label: 'config.ts', heat: 0, group: 'fog', fog: true },
+];
+
+// Edges (dependencies)
+const edges = [
+  [0, 1], [0, 2], [1, 4], [1, 3], [2, 3],
+  [4, 5], [4, 6],
+  [0, 7], [0, 8], [7, 8],
+  [1, 10], [10, 11], [10, 12],
+  [11, 13], [13, 14], [14, 15],
+  [16, 17], [17, 18],
+  [19, 20], [20, 21],
+  [3, 10], [8, 10], [12, 11],
+];
+
+function drawMap() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw edges
+  edges.forEach(([a, b]) => {
+    const na = nodes[a], nb = nodes[b];
+    const isFog = na.fog || nb.fog;
+    ctx.beginPath();
+    ctx.moveTo(na.x, na.y);
+    ctx.lineTo(nb.x, nb.y);
+    ctx.strokeStyle = isFog ? 'rgba(58,124,165,0.04)' : 'rgba(58,124,165,0.12)';
+    ctx.lineWidth = isFog ? 0.5 : 1;
+    ctx.stroke();
+  });
+
+  // Draw nodes
+  nodes.forEach(n => {
+    // Glow for active/warm nodes
+    if (n.heat > 0 && !n.fog) {
+      const color = n.secondary ? '212,118,60' : n.warning ? '212,118,60' : '58,124,165';
+      const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r * 3);
+      grad.addColorStop(0, `rgba(${color},${n.heat * 0.25})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r * 3, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+
+    // Node circle
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    if (n.fog) {
+      ctx.fillStyle = 'rgba(30,40,55,0.5)';
+      ctx.strokeStyle = 'rgba(58,124,165,0.08)';
+    } else if (n.warning) {
+      const h = n.heat;
+      ctx.fillStyle = `rgba(${Math.floor(40 + 172 * h)},${Math.floor(30 + 88 * h)},${Math.floor(40 + 20 * h)},0.8)`;
+      ctx.strokeStyle = `rgba(212,118,60,${0.3 + h * 0.5})`;
+    } else if (n.secondary) {
+      const h = n.heat;
+      ctx.fillStyle = `rgba(${Math.floor(40 + 172 * h)},${Math.floor(30 + 88 * h)},${Math.floor(40 + 20 * h)},0.7)`;
+      ctx.strokeStyle = `rgba(212,118,60,${0.2 + h * 0.4})`;
+    } else {
+      const h = n.heat;
+      ctx.fillStyle = `rgba(${Math.floor(20 + 38 * h)},${Math.floor(25 + 99 * h)},${Math.floor(40 + 125 * h)},0.8)`;
+      ctx.strokeStyle = `rgba(58,124,165,${0.2 + h * 0.6})`;
+    }
+    ctx.lineWidth = n.active ? 2 : 1;
+    ctx.fill();
+    ctx.stroke();
+
+    // Label
+    if (!n.fog) {
+      ctx.font = '9px "Courier New", monospace';
+      ctx.fillStyle = n.fog ? 'rgba(90,106,122,0.2)' : 'rgba(200,214,229,0.6)';
+      ctx.textAlign = 'center';
+      ctx.fillText(n.label, n.x, n.y + n.r + 14);
+    }
+  });
+}
+
+drawMap();
+
+// ── MINIMAP ──
+const mmCanvas = document.getElementById('minimapCanvas');
+const mmCtx = mmCanvas.getContext('2d');
+
+function drawMinimap() {
+  mmCtx.clearRect(0, 0, 160, 120);
+
+  // Scale factor
+  const sx = 160 / canvas.width;
+  const sy = 120 / canvas.height;
+
+  edges.forEach(([a, b]) => {
+    const na = nodes[a], nb = nodes[b];
+    if (na.fog && nb.fog) return;
+    mmCtx.beginPath();
+    mmCtx.moveTo(na.x * sx, na.y * sy);
+    mmCtx.lineTo(nb.x * sx, nb.y * sy);
+    mmCtx.strokeStyle = 'rgba(58,124,165,0.15)';
+    mmCtx.lineWidth = 0.5;
+    mmCtx.stroke();
+  });
+
+  nodes.forEach(n => {
+    if (n.fog) return;
+    mmCtx.beginPath();
+    mmCtx.arc(n.x * sx, n.y * sy, Math.max(2, n.r * sx * 1.5), 0, Math.PI * 2);
+    const color = n.secondary || n.warning ? '#d4763c' : '#3a7ca5';
+    mmCtx.fillStyle = n.heat > 0.5 ? color : 'rgba(58,124,165,0.3)';
+    mmCtx.fill();
+  });
+}
+
+drawMinimap();
+</script>
+</body>
+</html>

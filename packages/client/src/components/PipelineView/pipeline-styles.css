@@ -1,0 +1,66 @@
+/* Pipeline View — dark theme overrides for React Flow */
+
+.pipeline-view .react-flow__background {
+  background-color: #0a0e17 !important;
+}
+
+.pipeline-view .react-flow__minimap {
+  background-color: rgba(12, 18, 32, 0.95);
+  border: 1px solid rgba(58, 124, 165, 0.15);
+  border-radius: 4px;
+}
+
+.pipeline-view .react-flow__controls {
+  border: 1px solid rgba(58, 124, 165, 0.15);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.pipeline-view .react-flow__controls-button {
+  background: rgba(12, 18, 32, 0.95);
+  border-bottom: 1px solid rgba(58, 124, 165, 0.1);
+  fill: #9aa8b8;
+}
+
+.pipeline-view .react-flow__controls-button:hover {
+  background: rgba(58, 124, 165, 0.15);
+  fill: #dce3eb;
+}
+
+.pipeline-view .react-flow__attribution {
+  display: none;
+}
+
+/* Animations */
+@keyframes pipeline-dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+@keyframes pipeline-pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.02);
+  }
+}
+
+/* Tab activity dot pulse */
+@keyframes tab-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.4);
+  }
+}
+
+.tab-pulse-dot {
+  animation: tab-pulse 1.5s ease-in-out infinite;
+}
