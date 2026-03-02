@@ -1,0 +1,28 @@
+{
+  "name": "hudai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Visual IDE for AI-powered development",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/client",
+    "packages/telegram-bot"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "dev:server": "npm run dev -w @hudai/server",
+    "dev:client": "npm run dev -w @hudai/client",
+    "build:shared": "npm run build -w @hudai/shared",
+    "dev:telegram": "npm run dev -w @hudai/telegram-bot",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.1",
+    "turbo": "^2.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.4"
+  }
+}
