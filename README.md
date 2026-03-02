@@ -2,6 +2,8 @@
 
 A command center for AI code agents. See what your agent is doing, why, and steer it — without reading a wall of terminal text.
 
+**[hudai-landing-production.up.railway.app](https://hudai-landing-production.up.railway.app)**
+
 ## The Problem
 
 When an AI agent works on your codebase, you're staring at a scrolling terminal. You can't tell at a glance whether it's stuck, burning tokens on the wrong approach, or about to delete something it shouldn't. Step away for five minutes and you've lost the thread entirely.
@@ -83,4 +85,4 @@ Send `/start` to register, `/help` for commands.
 
 ## License
 
-Private.
+MIT
