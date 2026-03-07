@@ -12,6 +12,8 @@ export interface AgentDefinition {
   path: string;
   scope: 'project' | 'global';
   description?: string;
+  /** For virtual agents: detailed role/persona prompt. When set, uses subagent_type="general-purpose". */
+  rolePrompt?: string;
 }
 
 export interface McpServer {

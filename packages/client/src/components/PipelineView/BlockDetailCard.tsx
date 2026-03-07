@@ -32,10 +32,22 @@ function defaultBlockPrompt(block: PipelineBlock): string {
 }
 
 function agentBlockPrompt(block: PipelineBlock, agent: AgentDefinition): string {
+  const subagentType = agent.rolePrompt ? 'general-purpose' : agent.name;
+  const roleInstr = agent.rolePrompt ? `\nSubagent role: ${agent.rolePrompt}\n` : '';
   const fileList = block.files.length > 0
     ? `Files: ${block.files.join(', ')}`
     : '';
-  return `Use a subagent (Task tool, subagent_type="${agent.name}") to work on the "${block.label}" pipeline block (${block.blockType}). ${fileList}\n${agent.description ? `Agent purpose: ${agent.description}\n` : ''}The subagent should analyze all relevant files, identify issues or improvements, and report back with findings.`;
+  return `Use a subagent (Task tool, subagent_type="${subagentType}") to work on the "${block.label}" pipeline block (${block.blockType}). ${fileList}\n${agent.description ? `Agent purpose: ${agent.description}\n` : ''}${roleInstr}The subagent should analyze all relevant files, identify issues or improvements, and report back with findings.`;
+}
+
+function buildBlockContext(block: PipelineBlock, pipelineLabel?: string): string {
+  return [
+    pipelineLabel ? `Pipeline: ${pipelineLabel}` : null,
+    `Block: ${block.label} (${block.blockType})`,
+    block.technology ? `Technology: ${block.technology}` : null,
+    block.files.length > 0 ? `Files: ${block.files.join(', ')}` : null,
+    block.description ? `Description: ${block.description}` : null,
+  ].filter(Boolean).join('\n');
 }
 
 export const BUILTIN_AGENTS: AgentDefinition[] = [
@@ -43,6 +55,10 @@ export const BUILTIN_AGENTS: AgentDefinition[] = [
   { name: 'Plan', path: '', scope: 'global', description: 'Implementation planning' },
   { name: 'Bash', path: '', scope: 'global', description: 'Command execution' },
   { name: 'general-purpose', path: '', scope: 'global', description: 'Multi-step tasks' },
+  { name: 'Code Reviewer', path: '', scope: 'global', description: 'Deep code review with actionable feedback', rolePrompt: 'You are a senior code reviewer. Analyze the code for correctness, readability, maintainability, and edge cases. Rank findings by severity (critical, warning, suggestion). Provide specific line references and concrete fix recommendations.' },
+  { name: 'QA / Test Writer', path: '', scope: 'global', description: 'Test coverage analysis and test generation', rolePrompt: 'You are a QA engineer specializing in test coverage. Identify coverage gaps, then generate unit and integration tests following the project\'s existing test patterns. Cover happy paths, error paths, and edge cases. Use the project\'s test framework and conventions.' },
+  { name: 'Refactor Scout', path: '', scope: 'global', description: 'Identify refactoring opportunities', rolePrompt: 'You are a refactoring specialist. Identify code smells, duplication, SOLID violations, and overly complex functions. For each finding, explain the problem, suggest a refactoring approach, and provide brief before/after examples. Prioritize by impact.' },
+  { name: 'Security Auditor', path: '', scope: 'global', description: 'Security vulnerability scanning', rolePrompt: 'You are a security auditor. Scan for injection vulnerabilities (SQL, command, XSS), authentication/authorization flaws, hardcoded secrets, path traversal, and other OWASP Top 10 issues. Rate each finding by severity (critical, high, medium, low) and provide remediation guidance.' },
 ];
 
 export interface BlockDetailCardProps {
@@ -54,6 +70,8 @@ export interface BlockDetailCardProps {
   isFailing?: boolean;
   onClose: () => void;
   onSendPrompt: (text: string) => void;
+  onAskAdvisor?: (text: string, context: string) => void;
+  pipelineLabel?: string;
 }
 
 export function BlockDetailCard({
@@ -65,6 +83,8 @@ export function BlockDetailCard({
   isFailing = false,
   onClose,
   onSendPrompt,
+  onAskAdvisor,
+  pipelineLabel,
 }: BlockDetailCardProps) {
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -101,18 +121,29 @@ export function BlockDetailCard({
   const handleSend = useCallback(() => {
     const text = promptText.trim();
     if (!text) return;
-    onSendPrompt(text);
+    const context = buildBlockContext(block, pipelineLabel);
+    onSendPrompt(`${text}\n\nContext:\n${context}`);
     setPromptText('');
-  }, [promptText, onSendPrompt]);
+  }, [promptText, onSendPrompt, block, pipelineLabel]);
 
   const handleAnalyze = useCallback(() => {
-    onSendPrompt(defaultBlockPrompt(block));
-  }, [block, onSendPrompt]);
+    const context = buildBlockContext(block, pipelineLabel);
+    onSendPrompt(`${defaultBlockPrompt(block)}\n\nContext:\n${context}`);
+  }, [block, onSendPrompt, pipelineLabel]);
 
   const handlePickAgent = useCallback((agent: AgentDefinition) => {
-    onSendPrompt(agentBlockPrompt(block, agent));
+    const context = buildBlockContext(block, pipelineLabel);
+    onSendPrompt(`${agentBlockPrompt(block, agent)}\n\nContext:\n${context}`);
     setAgentPickerOpen(false);
-  }, [block, onSendPrompt]);
+  }, [block, onSendPrompt, pipelineLabel]);
+
+  const handleAskAdvisor = useCallback(() => {
+    const text = promptText.trim();
+    if (!text || !onAskAdvisor) return;
+    const context = buildBlockContext(block, pipelineLabel);
+    onAskAdvisor(text, context);
+    setPromptText('');
+  }, [promptText, onAskAdvisor, block, pipelineLabel]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -394,6 +425,26 @@ export function BlockDetailCard({
           >
             Send ↵
           </button>
+          {onAskAdvisor && (
+            <button
+              onClick={handleAskAdvisor}
+              disabled={!promptText.trim()}
+              title="Ask the advisor about this block"
+              style={{
+                padding: '4px 8px',
+                fontSize: 11,
+                fontFamily: fonts.mono,
+                fontWeight: 600,
+                background: promptText.trim() ? `${colors.action.think}20` : 'rgba(255,255,255,0.03)',
+                border: `1px solid ${promptText.trim() ? colors.action.think + '55' : colors.border.subtle}`,
+                borderRadius: 4,
+                color: promptText.trim() ? colors.action.think : colors.text.muted,
+                cursor: promptText.trim() ? 'pointer' : 'default',
+              }}
+            >
+              Advisor
+            </button>
+          )}
           <button
             onClick={handleAnalyze}
             title="Send a pre-built analysis prompt"
@@ -437,7 +488,7 @@ export function BlockDetailCard({
                   right: 0,
                   marginBottom: 4,
                   width: 220,
-                  maxHeight: 200,
+                  maxHeight: 320,
                   overflowY: 'auto',
                   background: colors.bg.panel,
                   border: `1px solid ${colors.accent.orange}44`,

@@ -79,6 +79,10 @@ export async function scanAgents(projectPath: string): Promise<AgentDefinition[]
     { name: 'Plan', path: '(built-in)', scope: 'global', description: 'Implementation planning' },
     { name: 'Bash', path: '(built-in)', scope: 'global', description: 'Command execution' },
     { name: 'general-purpose', path: '(built-in)', scope: 'global', description: 'Multi-step tasks' },
+    { name: 'Code Reviewer', path: '(built-in)', scope: 'global', description: 'Deep code review with actionable feedback', rolePrompt: 'You are a senior code reviewer. Analyze the code for correctness, readability, maintainability, and edge cases. Rank findings by severity (critical, warning, suggestion). Provide specific line references and concrete fix recommendations.' },
+    { name: 'QA / Test Writer', path: '(built-in)', scope: 'global', description: 'Test coverage analysis and test generation', rolePrompt: 'You are a QA engineer specializing in test coverage. Identify coverage gaps, then generate unit and integration tests following the project\'s existing test patterns. Cover happy paths, error paths, and edge cases. Use the project\'s test framework and conventions.' },
+    { name: 'Refactor Scout', path: '(built-in)', scope: 'global', description: 'Identify refactoring opportunities', rolePrompt: 'You are a refactoring specialist. Identify code smells, duplication, SOLID violations, and overly complex functions. For each finding, explain the problem, suggest a refactoring approach, and provide brief before/after examples. Prioritize by impact.' },
+    { name: 'Security Auditor', path: '(built-in)', scope: 'global', description: 'Security vulnerability scanning', rolePrompt: 'You are a security auditor. Scan for injection vulnerabilities (SQL, command, XSS), authentication/authorization flaws, hardcoded secrets, path traversal, and other OWASP Top 10 issues. Rate each finding by severity (critical, high, medium, low) and provide remediation guidance.' },
   ];
 
   return [...builtins, ...projectAgents, ...globalAgents];
