@@ -7,9 +7,13 @@ import { PipelineView } from '../PipelineView/PipelineView.js';
 import { LibraryPanel } from '../BuildQueue/LibraryPanel.js';
 import { useLibraryStore } from '../../stores/library-store.js';
 import { wsClient } from '../../ws/ws-client.js';
+import { useChatStore } from '../../stores/chat-store.js';
+import { useConfigStore } from '../../stores/config-store.js';
+import { BUILTIN_AGENTS } from '../PipelineView/BlockDetailCard.js';
+import { getAgentIcon } from '../shared/agent-icons.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
 import { Dropdown } from '../shared/Dropdown.js';
-import type { FileNode } from '@hudai/shared';
+import type { FileNode, CodebaseGraph, AgentDefinition } from '@hudai/shared';
 
 const toggleBtnStyle = (active: boolean): React.CSSProperties => ({
   padding: '3px 8px',
@@ -33,12 +37,34 @@ function defaultAnalysisPrompt(nodeId: string, isGroup: boolean): string {
   return `Analyze the file \`${fileName}\`: Is it passing its tests? Do the tests cover all important paths? Are there improvements we can make according to the current plan? Summarize findings concisely.`;
 }
 
-function agentAnalysisPrompt(nodeId: string, isGroup: boolean): string {
+function agentAnalysisPrompt(nodeId: string, isGroup: boolean, agent?: AgentDefinition): string {
+  const subagentType = agent?.rolePrompt ? 'general-purpose' : (agent?.name ?? 'general-purpose');
+  const roleInstr = agent?.rolePrompt ? `\nSubagent role: ${agent.rolePrompt}\n` : '';
+  const purposeInstr = agent?.description ? `\nAgent purpose: ${agent.description}\n` : '';
   if (isGroup) {
     const modulePath = nodeId.replace('__group__', '');
-    return `Use a subagent (Task tool) to thoroughly analyze and improve the \`${modulePath}/\` module. The subagent should: 1) Read all files in the module and their tests, 2) Check test coverage and identify gaps, 3) Suggest concrete improvements aligned with the current plan. Report back with findings.`;
+    return `Use a subagent (Task tool, subagent_type="${subagentType}") to thoroughly analyze and improve the \`${modulePath}/\` module.${purposeInstr}${roleInstr}The subagent should: 1) Read all files in the module and their tests, 2) Check test coverage and identify gaps, 3) Suggest concrete improvements aligned with the current plan. Report back with findings.`;
   }
-  return `Use a subagent (Task tool) to thoroughly analyze and improve the file \`${nodeId}\`. The subagent should: 1) Read the file and its tests, 2) Check test coverage and identify gaps, 3) Suggest concrete improvements aligned with the current plan. Report back with findings.`;
+  return `Use a subagent (Task tool, subagent_type="${subagentType}") to thoroughly analyze and improve the file \`${nodeId}\`.${purposeInstr}${roleInstr}The subagent should: 1) Read the file and its tests, 2) Check test coverage and identify gaps, 3) Suggest concrete improvements aligned with the current plan. Report back with findings.`;
+}
+
+const EMPTY_AGENTS: AgentDefinition[] = [];
+
+function buildNodeContext(nodeId: string, isGroup: boolean, graph: CodebaseGraph | null): string {
+  if (isGroup) {
+    const groupPath = nodeId.replace('__group__', '');
+    const files = graph?.nodes.filter(n => n.group === groupPath).map(n => n.id) ?? [];
+    return `Directory: ${groupPath}/\nFiles (${files.length}): ${files.slice(0, 20).join(', ')}`;
+  }
+  const node = graph?.nodes.find(n => n.id === nodeId);
+  const imports = graph?.edges.filter(e => e.source === nodeId).map(e => e.target) ?? [];
+  const importedBy = graph?.edges.filter(e => e.target === nodeId).map(e => e.source) ?? [];
+  return [
+    `File: ${nodeId}`,
+    node ? `Size: ${node.size} bytes` : null,
+    `Imports: ${imports.length > 0 ? imports.slice(0, 10).join(', ') : 'none'}`,
+    `Imported by: ${importedBy.length > 0 ? importedBy.slice(0, 10).join(', ') : 'none'}`,
+  ].filter(Boolean).join('\n');
 }
 
 interface ModuleChatBox {
@@ -296,7 +322,10 @@ export function CodebaseMap() {
   const [scopeNodes, setScopeNodes] = useState<string[]>([]);
   const [chatBox, setChatBox] = useState<ModuleChatBox | null>(null);
   const [chatText, setChatText] = useState('');
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [infoPanel, setInfoPanel] = useState<InfoPanel | null>(null);
+  const configAgents = useConfigStore((s) => s.config?.agents ?? EMPTY_AGENTS);
+  const allAgents = [...BUILTIN_AGENTS, ...configAgents.filter((a) => !BUILTIN_AGENTS.some((b) => b.name === a.name))];
   const graph = useGraphStore((s) => s.graph);
   const docsContent = useDocsStore((s) => s.content);
   const docsLoading = useDocsStore((s) => s.loading);
@@ -362,23 +391,40 @@ export function CodebaseMap() {
   const handleSendChat = () => {
     const text = chatText.trim();
     if (!text || !chatBox) return;
+    const context = buildNodeContext(chatBox.nodeId, chatBox.isGroup, graph);
     wsClient.send({
       kind: 'command',
-      command: { type: 'prompt', data: { text } },
+      command: { type: 'prompt', data: { text: `${text}\n\nContext:\n${context}` } },
     });
     setChatBox(null);
     setChatText('');
   };
 
-  const handleSendAgent = () => {
-    if (!chatBox) return;
-    wsClient.send({
-      kind: 'command',
-      command: { type: 'prompt', data: { text: agentAnalysisPrompt(chatBox.nodeId, chatBox.isGroup) } },
+  const handleAskAdvisor = () => {
+    const text = chatText.trim();
+    if (!text || !chatBox) return;
+    const context = buildNodeContext(chatBox.nodeId, chatBox.isGroup, graph);
+    useChatStore.getState().addMessage({
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      sessionId: '', timestamp: Date.now(), role: 'user', text,
     });
+    wsClient.send({ kind: 'chat.send', text, context });
     setChatBox(null);
     setChatText('');
   };
+
+  const handlePickAgent = useCallback((agent: AgentDefinition) => {
+    if (!chatBox) return;
+    const context = buildNodeContext(chatBox.nodeId, chatBox.isGroup, graph);
+    const prompt = agentAnalysisPrompt(chatBox.nodeId, chatBox.isGroup, agent);
+    wsClient.send({
+      kind: 'command',
+      command: { type: 'prompt', data: { text: `${prompt}\n\nContext:\n${context}` } },
+    });
+    setChatBox(null);
+    setChatText('');
+    setAgentPickerOpen(false);
+  }, [chatBox, graph]);
 
   const handleChatKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -388,6 +434,7 @@ export function CodebaseMap() {
     if (e.key === 'Escape') {
       setChatBox(null);
       setChatText('');
+      setAgentPickerOpen(false);
     }
   };
 
@@ -590,7 +637,7 @@ export function CodebaseMap() {
               </span>
             </div>
             <button
-              onClick={() => { setChatBox(null); setChatText(''); }}
+              onClick={() => { setChatBox(null); setChatText(''); setAgentPickerOpen(false); }}
               style={{
                 background: 'none',
                 border: 'none',
@@ -650,22 +697,95 @@ export function CodebaseMap() {
               Send ↵
             </button>
             <button
-              onClick={handleSendAgent}
+              onClick={handleAskAdvisor}
               style={{
                 flex: 1,
                 padding: '6px 0',
-                border: `1px solid ${colors.accent.orange}66`,
+                border: `1px solid ${colors.action.think}66`,
                 borderRadius: 4,
-                background: `${colors.accent.orange}15`,
-                color: colors.accent.orangeLight,
+                background: `${colors.action.think}15`,
+                color: colors.action.think,
                 fontSize: 12,
                 fontWeight: 600,
                 cursor: 'pointer',
               }}
-              title="Send a subagent to analyze and improve this module"
+              title="Ask the advisor about this node"
             >
-              Send Agent
+              Ask Advisor
             </button>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <button
+                onClick={() => setAgentPickerOpen((v) => !v)}
+                style={{
+                  width: '100%',
+                  padding: '6px 0',
+                  border: `1px solid ${agentPickerOpen ? colors.accent.orange + '99' : colors.accent.orange + '66'}`,
+                  borderRadius: 4,
+                  background: agentPickerOpen ? `${colors.accent.orange}30` : `${colors.accent.orange}15`,
+                  color: colors.accent.orangeLight,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+                title="Send a subagent to analyze and improve this module"
+              >
+                Agent ▾
+              </button>
+              {agentPickerOpen && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: '100%',
+                  left: 0,
+                  right: 0,
+                  marginBottom: 4,
+                  maxHeight: 280,
+                  overflowY: 'auto',
+                  background: colors.bg.panel,
+                  border: `1px solid ${colors.accent.orange}44`,
+                  borderRadius: 6,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                  zIndex: 30,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  padding: 4,
+                }}>
+                  {allAgents.map((agent) => {
+                    const ai = getAgentIcon(agent.name);
+                    return (
+                      <button
+                        key={agent.name}
+                        onClick={() => handlePickAgent(agent)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '5px 8px',
+                          background: 'transparent',
+                          border: 'none',
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = colors.surface.hover; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                      >
+                        <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{ai.icon}</span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 0, overflow: 'hidden' }}>
+                          <span style={{ fontSize: 11, fontFamily: fonts.mono, fontWeight: 600, color: ai.color }}>
+                            {agent.name}
+                          </span>
+                          {agent.description && (
+                            <span style={{ fontSize: 9, fontFamily: fonts.mono, color: colors.text.muted, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {agent.description}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Hint */}

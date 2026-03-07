@@ -3,6 +3,7 @@ import type { PipelineBlock, PipelineBlockType, AgentDefinition } from '@hudai/s
 import { useConfigStore } from '../../stores/config-store.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
 import { DescriptionBullets } from './DescriptionBullets.js';
+import { getAgentIcon } from '../shared/agent-icons.js';
 
 const EMPTY_AGENTS: AgentDefinition[] = [];
 
@@ -500,44 +501,53 @@ export function BlockDetailCard({
                   padding: 4,
                 }}
               >
-                {allAgents.map((agent) => (
-                  <button
-                    key={agent.name}
-                    onClick={() => handlePickAgent(agent)}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 2,
-                      padding: '6px 8px',
-                      background: 'transparent',
-                      border: 'none',
-                      borderRadius: 4,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = colors.surface.hover; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-                  >
-                    <span style={{
-                      fontSize: 12,
-                      fontFamily: fonts.mono,
-                      fontWeight: 600,
-                      color: colors.accent.orangeLight,
-                    }}>
-                      {agent.name}
-                    </span>
-                    {agent.description && (
-                      <span style={{
-                        fontSize: 10,
-                        fontFamily: fonts.mono,
-                        color: colors.text.muted,
-                        lineHeight: 1.3,
-                      }}>
-                        {agent.description}
-                      </span>
-                    )}
-                  </button>
-                ))}
+                {allAgents.map((agent) => {
+                  const ai = getAgentIcon(agent.name);
+                  return (
+                    <button
+                      key={agent.name}
+                      onClick={() => handlePickAgent(agent)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '6px 8px',
+                        background: 'transparent',
+                        border: 'none',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = colors.surface.hover; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                    >
+                      <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>{ai.icon}</span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 1, overflow: 'hidden' }}>
+                        <span style={{
+                          fontSize: 12,
+                          fontFamily: fonts.mono,
+                          fontWeight: 600,
+                          color: ai.color,
+                        }}>
+                          {agent.name}
+                        </span>
+                        {agent.description && (
+                          <span style={{
+                            fontSize: 10,
+                            fontFamily: fonts.mono,
+                            color: colors.text.muted,
+                            lineHeight: 1.3,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}>
+                            {agent.description}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>

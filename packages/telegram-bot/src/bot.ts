@@ -33,6 +33,15 @@ export function createBot(
   const bot = new Bot(token);
   const mode: BotMode = { chatMode: false };
 
+  // Log all outgoing messages via API transformer
+  bot.api.config.use((prev, method, payload, signal) => {
+    if (method === 'sendMessage' && payload && 'text' in payload) {
+      const preview = String((payload as any).text).replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').slice(0, 120);
+      console.log(`[telegram-bot] → OUT (${method}): ${preview}`);
+    }
+    return prev(method, payload, signal);
+  });
+
   // Auth middleware — only registered chatId can use the bot
   bot.use(async (ctx, next) => {
     const chatId = ctx.chat?.id;

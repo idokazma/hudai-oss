@@ -94,6 +94,9 @@ export function setupAutoNotifier(
     if (!config.chatId) return;
     // Attach current reply keyboard to every message (unless an InlineKeyboard is provided)
     const markup = options?.reply_markup ?? buildKeyboard(state.lastActivity);
+    // Strip HTML tags for log preview
+    const preview = text.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').slice(0, 120);
+    console.log(`[telegram-bot] → SEND: ${preview}`);
     bot.api.sendMessage(config.chatId, text, {
       parse_mode: options?.parse_mode ?? 'HTML',
       reply_markup: markup,
