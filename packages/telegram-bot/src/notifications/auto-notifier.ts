@@ -142,13 +142,6 @@ export function setupAutoNotifier(
           );
         }
 
-        // Agent went idle — always sent (even in silent mode)
-        if (activity === 'waiting_input' && prev !== 'waiting_input' && !state.idleSent) {
-          state.idleSent = true;
-          const terminal = terminalSnippet(bridge, 15);
-          send(`${projectTag(bridge)}✅ <b>Agent finished</b> — waiting for next command.\n\n${terminal}`);
-        }
-
         // Reset idle flag when agent starts working again
         if (activity === 'working') {
           state.idleSent = false;
