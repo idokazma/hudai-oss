@@ -24,6 +24,7 @@ import { usePipelineActivity, useAllPipelinesActivity } from '../../hooks/usePip
 import { usePlanPipeline } from '../../hooks/usePlanPipeline.js';
 import { useConfigStore } from '../../stores/config-store.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
+import { useChatStore } from '../../stores/chat-store.js';
 import { wsClient } from '../../ws/ws-client.js';
 import type { PipelineDefinition, PipelineBlock, AgentDefinition } from '@hudai/shared';
 
@@ -297,6 +298,16 @@ export function PipelineView() {
     setDetailCard(null);
   }, []);
 
+  /* ─── Ask advisor from detail card ─── */
+  const handleAskAdvisor = useCallback((text: string, context: string) => {
+    useChatStore.getState().addMessage({
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      sessionId: '', timestamp: Date.now(), role: 'user', text,
+    });
+    wsClient.send({ kind: 'chat.send', text, context });
+    setDetailCard(null);
+  }, []);
+
   /* ─── Right-click background → pipeline agent picker ─── */
   const onPaneContextMenu = useCallback((event: React.MouseEvent | MouseEvent) => {
     event.preventDefault();
@@ -317,7 +328,9 @@ export function PipelineView() {
     const fileList = allFiles.length > 0
       ? `\nFiles: ${allFiles.slice(0, 20).join(', ')}${allFiles.length > 20 ? ` (+${allFiles.length - 20} more)` : ''}`
       : '';
-    const prompt = `Use a subagent (Task tool, subagent_type="${agent.name}") to work on the "${selected.label}" pipeline.\n\nBlocks:\n${blockSummary}${fileList}\n\n${agent.description ? `Agent purpose: ${agent.description}\n` : ''}The subagent should analyze the full pipeline, identify issues or improvements across blocks, and report back with findings.`;
+    const subagentType = agent.rolePrompt ? 'general-purpose' : agent.name;
+    const roleInstr = agent.rolePrompt ? `\nSubagent role: ${agent.rolePrompt}\n` : '';
+    const prompt = `Use a subagent (Task tool, subagent_type="${subagentType}") to work on the "${selected.label}" pipeline.\n\nBlocks:\n${blockSummary}${fileList}\n\n${agent.description ? `Agent purpose: ${agent.description}\n` : ''}${roleInstr}The subagent should analyze the full pipeline, identify issues or improvements across blocks, and report back with findings.`;
     wsClient.send({
       kind: 'command',
       command: { type: 'prompt', data: { text: prompt } },
@@ -650,6 +663,8 @@ export function PipelineView() {
           isFailing={detailCard.isFailing}
           onClose={() => setDetailCard(null)}
           onSendPrompt={handleSendPrompt}
+          onAskAdvisor={handleAskAdvisor}
+          pipelineLabel={selected?.label}
         />
       )}
 
@@ -692,7 +707,7 @@ export function PipelineView() {
               ×
             </button>
           </div>
-          <div style={{ padding: 4, maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: 4, maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
             {allAgents.map((agent) => (
               <button
                 key={agent.name}
