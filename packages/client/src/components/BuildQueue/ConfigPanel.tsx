@@ -3,6 +3,7 @@ import { useConfigStore } from '../../stores/config-store.js';
 import { wsClient } from '../../ws/ws-client.js';
 import { colors, fonts } from '../../theme/tokens.js';
 import { GenerateModal, type GenerateModalType } from './GenerateModal.js';
+import { getAgentIcon } from '../shared/agent-icons.js';
 import type { SkillFile, AgentDefinition, PermissionRule } from '@hudai/shared';
 
 /** Built-in skill templates available to install */
@@ -24,11 +25,20 @@ const PERMISSION_PRESETS: Array<{ tool: string; label: string }> = [
   { tool: 'Bash(docker *)', label: 'docker' },
 ];
 
+/** Build a prompt to spawn a subagent with general project context */
+function spawnAgentPrompt(agent: AgentDefinition): string {
+  const subagentType = agent.rolePrompt ? 'general-purpose' : agent.name;
+  const roleInstr = agent.rolePrompt ? `\nSubagent role: ${agent.rolePrompt}\n` : '';
+  return `Use a subagent (Task tool, subagent_type="${subagentType}") to work on this project.\n\n${agent.description ? `Agent purpose: ${agent.description}\n` : ''}${roleInstr}The subagent should: 1) Read CLAUDE.md and understand the project structure, 2) Explore the codebase to build context, 3) Identify areas relevant to its purpose and report findings or take action.`;
+}
+
 type InspectedItem =
   | { kind: 'skill'; skill: SkillFile }
   | { kind: 'agent'; agent: AgentDefinition }
   | { kind: 'preset'; tool: string; label: string; isAllowed: boolean }
   | { kind: 'permission'; permission: PermissionRule };
+
+/* ── AddButton (unchanged) ── */
 
 function AddButton({ onClick }: { onClick: () => void }) {
   return (
@@ -53,12 +63,16 @@ function AddButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function SectionHeader({ title, count, expanded, onToggle, onAdd }: {
+/* ── CategoryStrip ── */
+
+function CategoryStrip({ icon, title, count, expanded, onToggle, onAdd, children }: {
+  icon: string;
   title: string;
   count: number;
   expanded: boolean;
   onToggle: () => void;
   onAdd?: () => void;
+  children?: React.ReactNode; // summary indicators when collapsed
 }) {
   return (
     <div style={{
@@ -68,6 +82,7 @@ function SectionHeader({ title, count, expanded, onToggle, onAdd }: {
       padding: '8px 12px',
       background: colors.surface.base,
       borderBottom: `1px solid ${colors.border.subtle}`,
+      gap: 8,
     }}>
       <button
         onClick={onToggle}
@@ -75,19 +90,22 @@ function SectionHeader({ title, count, expanded, onToggle, onAdd }: {
           flex: 1,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
+          gap: 8,
           background: 'none',
           border: 'none',
           cursor: 'pointer',
           color: colors.text.primary,
           padding: 0,
+          minWidth: 0,
         }}
       >
+        <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{icon}</span>
         <span style={{
           fontSize: 12,
           fontFamily: fonts.mono,
           textTransform: 'uppercase',
           letterSpacing: 1,
+          flexShrink: 0,
         }}>
           {expanded ? '▾' : '▸'} {title}
         </span>
@@ -98,12 +116,26 @@ function SectionHeader({ title, count, expanded, onToggle, onAdd }: {
           borderRadius: 8,
           background: count > 0 ? `${colors.accent.blue}22` : colors.surface.base,
           color: count > 0 ? colors.accent.blueLight : colors.text.muted,
+          flexShrink: 0,
         }}>
           {count}
         </span>
+        {/* Summary indicators when collapsed */}
+        {!expanded && (
+          <div style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            overflow: 'hidden',
+            minWidth: 0,
+          }}>
+            {children}
+          </div>
+        )}
       </button>
       {onAdd && (
-        <div style={{ marginLeft: 6 }}>
+        <div style={{ flexShrink: 0 }}>
           <AddButton onClick={onAdd} />
         </div>
       )}
@@ -111,68 +143,139 @@ function SectionHeader({ title, count, expanded, onToggle, onAdd }: {
   );
 }
 
-function ItemRow({ label, detail, badge, badgeColor, onClick, onContextMenu, style: extraStyle }: {
+/* ── IconCard ── */
+
+function IconCard({ icon, label, borderColor, onClick, onContextMenu, onSpawn }: {
+  icon: string;
   label: string;
-  detail?: string;
-  badge?: string;
-  badgeColor?: string;
+  borderColor: string;
   onClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
-  style?: React.CSSProperties;
+  onSpawn?: () => void;
 }) {
+  const [hovered, setHovered] = useState(false);
   return (
     <div
       onClick={onClick}
       onContextMenu={onContextMenu}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
-        padding: '5px 12px 5px 20px',
+        width: 72,
+        height: 72,
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
-        gap: 6,
-        borderBottom: `1px solid rgba(255,255,255,0.02)`,
+        justifyContent: 'center',
+        gap: 4,
+        borderRadius: 6,
+        border: `1px solid ${hovered ? colors.border.medium : colors.border.subtle}`,
+        borderLeft: `3px solid ${borderColor}`,
+        background: hovered ? colors.surface.hover : colors.surface.base,
         cursor: onClick ? 'pointer' : 'default',
-        ...extraStyle,
+        transition: 'background 0.15s, border-color 0.15s',
+        flexShrink: 0,
+        position: 'relative',
       }}
     >
-      {badge && (
-        <span style={{
-          fontSize: 10,
-          fontFamily: fonts.mono,
-          padding: '1px 4px',
-          borderRadius: 3,
-          background: `${badgeColor ?? colors.text.muted}22`,
-          color: badgeColor ?? colors.text.muted,
-          flexShrink: 0,
-        }}>
-          {badge}
-        </span>
-      )}
+      <span style={{ fontSize: 22, lineHeight: 1 }}>{icon}</span>
       <span style={{
-        fontSize: 12,
+        fontSize: 10,
         fontFamily: fonts.mono,
         color: colors.text.secondary,
+        textAlign: 'center',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
-        flex: 1,
+        width: '100%',
+        padding: '0 4px',
       }}>
         {label}
       </span>
-      {detail && (
-        <span style={{
-          fontSize: 11,
-          fontFamily: fonts.mono,
-          color: colors.text.muted,
-          flexShrink: 0,
-        }}>
-          {detail}
-        </span>
+      {/* Spawn button — top-right corner, visible on hover */}
+      {onSpawn && hovered && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onSpawn(); }}
+          title="Spawn subagent"
+          style={{
+            position: 'absolute',
+            top: 2,
+            right: 2,
+            width: 18,
+            height: 18,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 11,
+            lineHeight: 1,
+            borderRadius: '50%',
+            border: `1px solid ${colors.accent.orange}66`,
+            background: `${colors.accent.orange}30`,
+            color: colors.accent.orangeLight,
+            cursor: 'pointer',
+            padding: 0,
+          }}
+        >
+          ▶
+        </button>
       )}
     </div>
   );
 }
 
-/* ── Inspect Panel ── */
+/* ── PermPill ── */
+
+function PermPill({ label, active, onClick, onContextMenu }: {
+  label: string;
+  active: boolean;
+  onClick?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onContextMenu={onContextMenu}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '3px 10px',
+        fontSize: 11,
+        fontFamily: fonts.mono,
+        fontWeight: 500,
+        borderRadius: 12,
+        border: `1px solid ${active ? `${colors.status.successLight}40` : colors.border.subtle}`,
+        background: active
+          ? (hovered ? `${colors.status.success}30` : `${colors.status.success}18`)
+          : (hovered ? colors.surface.hover : 'transparent'),
+        color: active ? colors.status.successLight : colors.text.muted,
+        cursor: 'pointer',
+        transition: 'all 0.15s',
+        flexShrink: 0,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/* ── Summary Dot ── */
+
+function SummaryDot({ color }: { color: string }) {
+  return (
+    <span style={{
+      width: 7,
+      height: 7,
+      borderRadius: '50%',
+      background: color,
+      flexShrink: 0,
+    }} />
+  );
+}
+
+/* ── Inspect Panel (unchanged) ── */
 
 function InspectPanel({ item, fileContent, fileLoading, onClose }: {
   item: InspectedItem;
@@ -448,7 +551,7 @@ function InspectPanel({ item, fileContent, fileLoading, onClose }: {
   );
 }
 
-/* ── Context Menu ── */
+/* ── Context Menu (unchanged) ── */
 
 function ContextMenu({ x, y, item, onClose }: {
   x: number;
@@ -529,8 +632,8 @@ export function ConfigPanel() {
   const suggestions = useConfigStore((s) => s.suggestions);
   const dismissSuggestion = useConfigStore((s) => s.dismissSuggestion);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    skills: true,
-    agents: true,
+    skills: false,
+    agents: false,
     permissions: false,
   });
   const [modal, setModal] = useState<GenerateModalType | null>(null);
@@ -608,196 +711,239 @@ export function ConfigPanel() {
       overflowX: 'hidden',
       position: 'relative',
     }}>
-      {/* Skills */}
-      <SectionHeader
+      {/* ── Skills ── */}
+      <CategoryStrip
+        icon="⚡"
         title="Skills"
         count={config.skills.length}
         expanded={expanded.skills}
         onToggle={() => toggle('skills')}
         onAdd={() => setModal('skill')}
-      />
-      {expanded.skills && config.skills.map((s) => {
-        const canToggle = s.scope === 'project';
-        const active = !s.disabled;
-        return (
-          <div
-            key={s.path}
-            onClick={() => openInspect({ kind: 'skill', skill: s })}
-            onContextMenu={canToggle ? (e) => openContextMenu(e, { kind: 'skill', skill: s }) : undefined}
-            style={{ cursor: 'pointer' }}
-          >
-            <div style={{
-              padding: '5px 12px 5px 20px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              borderBottom: '1px solid rgba(255,255,255,0.02)',
-              background: active ? `${colors.status.success}10` : 'none',
-            }}>
-              {s.description && (
-                <span style={{
-                  fontSize: 10,
-                  fontFamily: fonts.mono,
-                  padding: '1px 4px',
-                  borderRadius: 3,
-                  background: `${colors.accent.blue}${active ? '22' : '10'}`,
-                  color: active ? colors.accent.blue : colors.text.muted,
-                  flexShrink: 0,
-                }}>
-                  {s.description.slice(0, 20)}
-                </span>
-              )}
-              <span style={{
-                fontSize: 12,
-                fontFamily: fonts.mono,
-                color: active ? colors.status.successLight : colors.text.muted,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                flex: 1,
-              }}>
-                {s.name}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-      {expanded.skills && (() => {
-        const installedNames = new Set(config.skills.map(s => s.name));
-        const installable = AVAILABLE_SKILLS.filter(s => !installedNames.has(s.name));
-        if (installable.length === 0) return null;
-        return installable.map(s => (
-          <div key={s.id} style={{
-            padding: '5px 12px 5px 20px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            borderBottom: '1px solid rgba(255,255,255,0.02)',
-            opacity: 0.6,
-          }}>
-            <span style={{
-              fontSize: 10,
-              fontFamily: fonts.mono,
-              padding: '1px 4px',
-              borderRadius: 3,
-              background: `${colors.accent.blue}22`,
-              color: colors.accent.blue,
-              flexShrink: 0,
-            }}>
-              {s.description.slice(0, 20)}
-            </span>
-            <span style={{
-              fontSize: 12,
-              fontFamily: fonts.mono,
-              color: colors.text.muted,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              flex: 1,
-            }}>
-              {s.name}
-            </span>
-            <button
-              onClick={() => wsClient.send({ kind: 'skill.install', skillId: s.id })}
-              title={`Install ${s.name} skill`}
-              style={{
-                border: `1px solid ${colors.accent.blue}50`,
-                background: `${colors.accent.blue}15`,
-                color: colors.accent.blueLight,
-                fontSize: 13,
-                fontWeight: 700,
-                cursor: 'pointer',
-                padding: '0 6px',
-                borderRadius: 3,
-                lineHeight: '18px',
-                flexShrink: 0,
-              }}
-            >
-              +
-            </button>
-          </div>
-        ));
-      })()}
+      >
+        {config.skills.map((s) => (
+          <SummaryDot key={s.path} color={!s.disabled ? colors.status.successLight : colors.text.dimmed} />
+        ))}
+      </CategoryStrip>
+      {expanded.skills && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '10px 12px',
+          borderBottom: `1px solid ${colors.border.subtle}`,
+        }}>
+          {config.skills.map((s) => {
+            const active = !s.disabled;
+            const canCtx = s.scope === 'project';
+            return (
+              <IconCard
+                key={s.path}
+                icon={active ? '⚡' : '⚡'}
+                label={s.name}
+                borderColor={active ? colors.status.successLight : colors.text.dimmed}
+                onClick={() => openInspect({ kind: 'skill', skill: s })}
+                onContextMenu={canCtx ? (e) => openContextMenu(e, { kind: 'skill', skill: s }) : undefined}
+              />
+            );
+          })}
+          {/* Installable skills */}
+          {(() => {
+            const installedNames = new Set(config.skills.map(s => s.name));
+            return AVAILABLE_SKILLS
+              .filter(s => !installedNames.has(s.name))
+              .map(s => (
+                <div
+                  key={s.id}
+                  style={{
+                    width: 72,
+                    height: 72,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 4,
+                    borderRadius: 6,
+                    border: `1px dashed ${colors.border.subtle}`,
+                    background: 'transparent',
+                    cursor: 'pointer',
+                    opacity: 0.6,
+                    flexShrink: 0,
+                  }}
+                  onClick={() => wsClient.send({ kind: 'skill.install', skillId: s.id })}
+                  title={`Install ${s.name}`}
+                >
+                  <span style={{ fontSize: 18, lineHeight: 1 }}>+</span>
+                  <span style={{
+                    fontSize: 10,
+                    fontFamily: fonts.mono,
+                    color: colors.text.muted,
+                    textAlign: 'center',
+                    padding: '0 4px',
+                  }}>
+                    {s.name}
+                  </span>
+                </div>
+              ));
+          })()}
+        </div>
+      )}
 
-      {/* Agents */}
-      <SectionHeader
+      {/* ── Agents ── */}
+      <CategoryStrip
+        icon="🤖"
         title="Agents"
         count={config.agents.length}
         expanded={expanded.agents}
         onToggle={() => toggle('agents')}
         onAdd={() => setModal('agent')}
-      />
-      {expanded.agents && config.agents.map((a) => (
-        <ItemRow
-          key={a.path + a.name}
-          label={a.name}
-          detail={a.path === '(built-in)' ? 'built-in' : a.scope}
-          badge={a.description ? a.description.slice(0, 24) : undefined}
-          badgeColor={colors.action.think}
-          onClick={() => openInspect({ kind: 'agent', agent: a })}
-        />
-      ))}
+      >
+        {config.agents.map((a) => (
+          <SummaryDot key={a.path + a.name} color={getAgentIcon(a.name).color} />
+        ))}
+      </CategoryStrip>
+      {expanded.agents && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '10px 12px',
+          borderBottom: `1px solid ${colors.border.subtle}`,
+        }}>
+          {config.agents.map((a) => {
+            const ai = getAgentIcon(a.name);
+            return (
+              <IconCard
+                key={a.path + a.name}
+                icon={ai.icon}
+                label={a.name.length > 8 ? a.name.slice(0, 7) + '…' : a.name}
+                borderColor={ai.color}
+                onClick={() => openInspect({ kind: 'agent', agent: a })}
+                onSpawn={() => {
+                  wsClient.send({
+                    kind: 'command',
+                    command: { type: 'prompt', data: { text: spawnAgentPrompt(a) } },
+                  });
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
 
-      {/* Permissions */}
-      <SectionHeader
-        title="Permissions"
+      {/* ── Permissions ── */}
+      <CategoryStrip
+        icon="🔒"
+        title="Perms"
         count={config.permissions.length}
         expanded={expanded.permissions}
         onToggle={() => toggle('permissions')}
         onAdd={() => setModal('permission')}
-      />
+      >
+        {PERMISSION_PRESETS.filter((p) => allowedTools.has(p.tool)).map((p) => (
+          <span
+            key={p.tool}
+            style={{
+              fontSize: 9,
+              fontFamily: fonts.mono,
+              padding: '1px 5px',
+              borderRadius: 8,
+              background: `${colors.status.success}25`,
+              color: colors.status.successLight,
+              flexShrink: 0,
+              lineHeight: '14px',
+            }}
+          >
+            {p.label}
+          </span>
+        ))}
+      </CategoryStrip>
       {expanded.permissions && (
-        <>
-          {/* Preset toggles */}
-          {PERMISSION_PRESETS.map((preset) => {
-            const isAllowed = allowedTools.has(preset.tool);
-            return (
-              <div
-                key={preset.tool}
-                onClick={() => openInspect({ kind: 'preset', tool: preset.tool, label: preset.label, isAllowed })}
-                onContextMenu={(e) => openContextMenu(e, { kind: 'preset', tool: preset.tool, label: preset.label, isAllowed })}
-                style={{
-                  padding: '4px 12px 4px 20px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  borderBottom: '1px solid rgba(255,255,255,0.02)',
-                  background: isAllowed ? `${colors.status.success}10` : 'none',
-                  cursor: 'pointer',
-                }}
-              >
-                <span style={{
-                  fontSize: 12,
-                  fontFamily: fonts.mono,
-                  color: isAllowed ? colors.status.successLight : colors.text.muted,
-                  flex: 1,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  textAlign: 'left',
-                }}>
-                  {preset.label}
-                </span>
-              </div>
-            );
-          })}
+        <div style={{
+          padding: '10px 12px',
+          borderBottom: `1px solid ${colors.border.subtle}`,
+        }}>
+          {/* Preset pills in flex-wrap row */}
+          <div style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 6,
+            marginBottom: nonPresetPermissions.length > 0 ? 10 : 0,
+          }}>
+            {PERMISSION_PRESETS.map((preset) => {
+              const isAllowed = allowedTools.has(preset.tool);
+              return (
+                <PermPill
+                  key={preset.tool}
+                  label={preset.label}
+                  active={isAllowed}
+                  onClick={() => openInspect({ kind: 'preset', tool: preset.tool, label: preset.label, isAllowed })}
+                  onContextMenu={(e) => openContextMenu(e, { kind: 'preset', tool: preset.tool, label: preset.label, isAllowed })}
+                />
+              );
+            })}
+          </div>
 
-          {/* Non-preset permissions (read-only) */}
-          {nonPresetPermissions.map((p, i) => (
-            <ItemRow
-              key={`${p.tool}-${i}`}
-              label={p.tool}
-              detail={p.scope}
-              badge={p.type}
-              badgeColor={p.type === 'allow' ? colors.status.successLight : colors.status.errorLight}
-              onClick={() => openInspect({ kind: 'permission', permission: p })}
-            />
-          ))}
-
-        </>
+          {/* Non-preset permissions (read-only small text rows) */}
+          {nonPresetPermissions.length > 0 && (
+            <div style={{
+              borderTop: `1px solid ${colors.border.subtle}`,
+              paddingTop: 8,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 3,
+            }}>
+              {nonPresetPermissions.map((p, i) => (
+                <div
+                  key={`${p.tool}-${i}`}
+                  onClick={() => openInspect({ kind: 'permission', permission: p })}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '2px 4px',
+                    cursor: 'pointer',
+                    borderRadius: 3,
+                  }}
+                >
+                  <span style={{
+                    fontSize: 9,
+                    fontFamily: fonts.mono,
+                    padding: '1px 4px',
+                    borderRadius: 3,
+                    background: `${p.type === 'allow' ? colors.status.successLight : colors.status.errorLight}22`,
+                    color: p.type === 'allow' ? colors.status.successLight : colors.status.errorLight,
+                    flexShrink: 0,
+                  }}>
+                    {p.type}
+                  </span>
+                  <span style={{
+                    fontSize: 11,
+                    fontFamily: fonts.mono,
+                    color: colors.text.secondary,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {p.tool}
+                  </span>
+                  {p.scope && (
+                    <span style={{
+                      fontSize: 10,
+                      fontFamily: fonts.mono,
+                      color: colors.text.muted,
+                      flexShrink: 0,
+                    }}>
+                      {p.scope}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
-      {/* Permission Suggestions */}
+      {/* Permission Suggestions (unchanged) */}
       {suggestions.length > 0 && (
         <>
           <div style={{

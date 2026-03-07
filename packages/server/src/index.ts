@@ -370,7 +370,8 @@ async function attachToPane(tmuxTarget: string) {
 
   agent.on('pane-content', (content: string, caret: { x: number; lineIndex: number } | null) => {
     // Track when pane content actually changes (for stale detection)
-    if (content !== lastPaneContent) {
+    const paneChanged = content !== lastPaneContent;
+    if (paneChanged) {
       lastPaneChangeAt = Date.now();
     }
     lastPaneContent = content;
@@ -409,8 +410,10 @@ async function attachToPane(tmuxTarget: string) {
     const activityChanged = analysis.activity !== sessionState.agentActivity;
     const detailChanged = analysis.detail !== sessionState.agentActivityDetail;
 
-    // Reset idle flag when agent leaves idle state
-    if (activityChanged && sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input') {
+    // Reset idle flag only when pane content genuinely changed (agent started working again).
+    // Without the contentChanged guard, the analyzer can flap between 'working' and
+    // 'waiting_input' on the same stale pane, causing repeated idle notifications.
+    if (activityChanged && sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
       idleNotified = false;
     }
 
@@ -1014,7 +1017,7 @@ fastify.register(async function (app) {
 
           case 'chat.send': {
             if (commanderChat && serviceEnabled.llm && sessionState.sessionId) {
-              commanderChat.onUserMessage(sessionState.sessionId, msg.text).then(() => {
+              commanderChat.onUserMessage(sessionState.sessionId, msg.text, msg.context).then(() => {
                 for (const chatMsg of commanderChat!.flush()) {
                   broadcast(chatMsg);
                 }
