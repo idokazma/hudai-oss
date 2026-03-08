@@ -2,6 +2,7 @@ import { Bot, InlineKeyboard, Keyboard } from 'grammy';
 import type { WsBridge } from '../ws-bridge.js';
 import type { TelegramConfig } from '../config/config.js';
 import type { ServerMessage, AgentActivity } from '@hudai/shared';
+import type { BotMode } from '../commands/chat.js';
 import { stripAnsi, truncate } from './formatters.js';
 
 function escHtml(text: string): string {
@@ -25,27 +26,28 @@ function projectTag(bridge: WsBridge): string {
   return `<b>[${escHtml(name)}]</b> `;
 }
 
-/** Build a ReplyKeyboard based on current agent activity */
-export function buildKeyboard(activity: AgentActivity | undefined): Keyboard {
+/** Build a ReplyKeyboard based on current agent activity and chat mode */
+export function buildKeyboard(activity: AgentActivity | undefined, chatMode = false): Keyboard {
   const kb = new Keyboard().resized().persistent();
+  const modeBtn = chatMode ? '🤖 Agent' : '💬 Ask';
 
   switch (activity) {
     case 'waiting_permission':
       kb.text('✅ Approve').text('❌ Reject').row();
-      kb.text('📟 Terminal').text('📊 Status').row();
+      kb.text('📟 Terminal').text(modeBtn).row();
       break;
     case 'waiting_answer':
-      kb.text('📟 Terminal').text('📊 Status').row();
-      kb.text('📋 Summary').text('💬 Ask').row();
+      kb.text('📟 Terminal').text(modeBtn).row();
+      kb.text('📋 Summary').text('💰 Cost').row();
       break;
     case 'working':
       kb.text('⏸ Pause').text('📟 Terminal').row();
-      kb.text('📊 Status').text('📋 Summary').row();
+      kb.text(modeBtn).text('📋 Summary').row();
       break;
     case 'waiting_input':
     default:
-      kb.text('📟 Terminal').text('📊 Status').row();
-      kb.text('📋 Summary').text('💬 Ask').row();
+      kb.text('📟 Terminal').text(modeBtn).row();
+      kb.text('📋 Summary').text('💰 Cost').row();
       break;
   }
 
@@ -64,7 +66,9 @@ export const KEYBOARD_COMMANDS: Record<string, string> = {
   '📟 Terminal': '/terminal',
   '📊 Status': '/status',
   '📋 Summary': '/summary',
-  '💬 Ask': '/ask',
+  '💬 Ask': '/togglemode',
+  '🤖 Agent': '/togglemode',
+  '💰 Cost': '/cost',
   '⋯ More': '/more',
 };
 
@@ -80,7 +84,8 @@ interface NotifierState {
 export function setupAutoNotifier(
   bot: Bot,
   bridge: WsBridge,
-  config: TelegramConfig
+  config: TelegramConfig,
+  mode: BotMode,
 ): { unsub: () => void; requestFollowUp: (count?: number) => void } {
   const state: NotifierState = {
     lastActivity: undefined,
@@ -93,7 +98,7 @@ export function setupAutoNotifier(
   const send = (text: string, options?: { reply_markup?: InlineKeyboard; parse_mode?: 'HTML' }) => {
     if (!config.chatId) return;
     // Attach current reply keyboard to every message (unless an InlineKeyboard is provided)
-    const markup = options?.reply_markup ?? buildKeyboard(state.lastActivity);
+    const markup = options?.reply_markup ?? buildKeyboard(state.lastActivity, mode.chatMode);
     // Strip HTML tags for log preview
     const preview = text.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').slice(0, 120);
     console.log(`[telegram-bot] → SEND: ${preview}`);

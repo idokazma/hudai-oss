@@ -18,7 +18,7 @@ import { handleQuiet } from './commands/quiet.js';
 import { handleCost } from './commands/cost.js';
 import { handleSessions, handleAttach, handleDetach } from './commands/sessions.js';
 import { handleSpawn, setupSpawnCallbacks, handleSpawnReply } from './commands/spawn.js';
-import { handleChatMode, handleAgentMode, handleAsk } from './commands/chat.js';
+import { handleChatMode, handleAgentMode, handleAsk, handleToggleMode } from './commands/chat.js';
 import type { BotMode } from './commands/chat.js';
 import { handleMore, setupMenuCallbacks } from './commands/menu.js';
 
@@ -121,6 +121,7 @@ export function createBot(
   bot.command('answer', handleAnswer(bridge));
   bot.command('chat', handleChatMode(mode, config));
   bot.command('agent', handleAgentMode(mode, config));
+  bot.command('togglemode', handleToggleMode(mode, config));
   bot.command('ask', handleAsk(bridge));
   bot.command('silent', handleSilent(config));
   bot.command('quiet', handleQuiet(bridge));
@@ -132,7 +133,7 @@ export function createBot(
   bot.command('more', handleMore());
 
   // Auto-notifications (must be set up before callback handlers so requestFollowUp is available)
-  const { requestFollowUp } = setupAutoNotifier(bot, bridge, config);
+  const { requestFollowUp } = setupAutoNotifier(bot, bridge, config, mode);
 
   // Inline keyboard callback handlers — trigger follow-up on approve/reject/answer
   setupCallbackHandlers(bot, bridge, () => requestFollowUp(2));
@@ -153,6 +154,7 @@ export function createBot(
     '/reject': handleReject(bridge),
     '/pause': handlePause(bridge),
     '/resume': handleResume(bridge),
+    '/togglemode': handleToggleMode(mode, config),
     '/more': handleMore(),
   };
 
@@ -174,22 +176,7 @@ export function createBot(
       return;
     }
 
-    // Handle "Ask" keyboard button → show ForceReply prompt
     const cmd = KEYBOARD_COMMANDS[text];
-    if (cmd === '/ask') {
-      const forceReply = {
-        force_reply: true as const,
-        selective: true,
-        input_field_placeholder: 'Type your question...',
-      };
-      ctx.reply('💬 What would you like to ask the advisor?', {
-        reply_markup: forceReply,
-      }).then((msg) => {
-        askPromptIds.add(msg.message_id);
-      }).catch(console.error);
-      return;
-    }
-
     if (cmd && keyboardHandlers[cmd]) {
       keyboardHandlers[cmd](ctx);
       return;
@@ -209,9 +196,9 @@ export function createBot(
 }
 
 /** Push the reply keyboard to the chat (e.g. on startup) */
-export async function pushKeyboard(bot: Bot, config: TelegramConfig): Promise<void> {
+export async function pushKeyboard(bot: Bot, config: TelegramConfig, mode?: BotMode): Promise<void> {
   if (!config.chatId) return;
-  const kb = buildKeyboard(undefined); // default keyboard
+  const kb = buildKeyboard(undefined, mode?.chatMode); // default keyboard
   await bot.api.sendMessage(config.chatId, '🤖 Hudai bot connected.', {
     reply_markup: kb,
   });
