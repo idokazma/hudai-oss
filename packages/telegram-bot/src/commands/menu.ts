@@ -3,14 +3,14 @@ import type { Bot } from 'grammy';
 import type { WsBridge } from '../ws-bridge.js';
 import type { TelegramConfig } from '../config/config.js';
 import type { BotMode } from './chat.js';
+import { BOT_AGENTS, buildSpawnPrompt } from '../agents.js';
 
 // ─── Keyboards ───
 
 function categoriesKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('📡 Monitor', 'menu:monitor').text('🎮 Steer', 'menu:steer').row()
-    .text('🔄 Sessions', 'menu:sessions').text('💬 Chat', 'menu:chat').row()
-    .text('⚙️ Settings', 'menu:settings');
+    .text('📡 Monitor', 'menu:monitor').text('🎯 Steer', 'menu:steer').row()
+    .text('📂 Sessions', 'menu:sessions').text('⚙️ Settings', 'menu:settings');
 }
 
 function monitorKeyboard(): InlineKeyboard {
@@ -21,22 +21,26 @@ function monitorKeyboard(): InlineKeyboard {
 }
 
 function steerKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
+  const kb = new InlineKeyboard()
     .text('⏸ Pause', 'menu:pause').text('▶️ Resume', 'menu:resume').row()
-    .text('📋 Summary', 'menu:summary').row()
-    .text('« Back', 'menu:back');
+    .text('📋 Summary', 'menu:summary').row();
+
+  // Agent buttons — 2 per row
+  for (let i = 0; i < BOT_AGENTS.length; i++) {
+    const a = BOT_AGENTS[i];
+    kb.text(`${a.icon} ${a.name}`, `spawn:${i}`);
+    if (i % 2 === 1) kb.row();
+  }
+  if (BOT_AGENTS.length % 2 === 1) kb.row();
+
+  kb.text('« Back', 'menu:back');
+  return kb;
 }
 
 function sessionsKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('📋 List / Attach', 'menu:list').text('🧬 Spawn', 'menu:spawn').row()
     .text('🔌 Detach', 'menu:detach').row()
-    .text('« Back', 'menu:back');
-}
-
-function chatKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('💬 Chat Mode', 'menu:chatmode').text('🤖 Agent Mode', 'menu:agentmode').row()
     .text('« Back', 'menu:back');
 }
 
@@ -72,15 +76,11 @@ export function setupMenuCallbacks(
     await ctx.answerCallbackQuery();
   });
   bot.callbackQuery('menu:steer', async (ctx) => {
-    await ctx.editMessageText('🎮 Steer', { reply_markup: steerKeyboard() });
+    await ctx.editMessageText('🎯 Steer', { reply_markup: steerKeyboard() });
     await ctx.answerCallbackQuery();
   });
   bot.callbackQuery('menu:sessions', async (ctx) => {
-    await ctx.editMessageText('🔄 Sessions', { reply_markup: sessionsKeyboard() });
-    await ctx.answerCallbackQuery();
-  });
-  bot.callbackQuery('menu:chat', async (ctx) => {
-    await ctx.editMessageText('💬 Chat', { reply_markup: chatKeyboard() });
+    await ctx.editMessageText('📂 Sessions', { reply_markup: sessionsKeyboard() });
     await ctx.answerCallbackQuery();
   });
   bot.callbackQuery('menu:settings', async (ctx) => {
@@ -216,18 +216,23 @@ export function setupMenuCallbacks(
     ).catch(() => {});
   });
 
-  // ── Chat commands ──
+  // ── Spawn agent commands ──
 
-  bot.callbackQuery('menu:chatmode', async (ctx) => {
-    mode.chatMode = true;
-    await ctx.answerCallbackQuery({ text: 'Chat mode' });
-    await ctx.reply('💬 Chat mode — messages go to the advisor.');
-  });
-
-  bot.callbackQuery('menu:agentmode', async (ctx) => {
-    mode.chatMode = false;
-    await ctx.answerCallbackQuery({ text: 'Agent mode' });
-    await ctx.reply('🤖 Agent mode — messages go to the terminal.');
+  bot.callbackQuery(/^spawn:(\d+)$/, async (ctx) => {
+    const idx = parseInt(ctx.match![1], 10);
+    const agent = BOT_AGENTS[idx];
+    if (!agent) {
+      await ctx.answerCallbackQuery({ text: 'Unknown agent' });
+      return;
+    }
+    const prompt = buildSpawnPrompt(agent);
+    bridge.send({ kind: 'command', command: { type: 'prompt', data: { text: prompt } } });
+    requestFollowUp(3);
+    await ctx.answerCallbackQuery({ text: `Spawning ${agent.icon} ${agent.name}...` });
+    await ctx.editMessageText(
+      `${agent.icon} Spawning <b>${esc(agent.name)}</b>...`,
+      { parse_mode: 'HTML' },
+    ).catch(() => {});
   });
 
   // ── Settings commands ──
