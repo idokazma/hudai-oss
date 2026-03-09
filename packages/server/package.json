@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "bin": {
+    "hudai": "./bin/hudai.js"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
@@ -11,6 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/static": "^9.0.0",
     "@fastify/websocket": "^11.0.0",
     "@google/generative-ai": "^0.21.0",
     "@hudai/shared": "*",

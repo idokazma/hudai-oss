@@ -9,7 +9,8 @@ import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import type { WebSocket } from 'ws';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { watch, type FSWatcher } from 'node:fs';
+import { existsSync, watch, type FSWatcher } from 'node:fs';
+import fastifyStatic from '@fastify/static';
 import { join } from 'node:path';
 import { execSync, fork, type ChildProcess } from 'node:child_process';
 // @ts-ignore — @lydell/node-pty has types but exports field doesn't resolve them
@@ -1017,7 +1018,7 @@ fastify.register(async function (app) {
 
           case 'chat.send': {
             if (commanderChat && serviceEnabled.llm && sessionState.sessionId) {
-              commanderChat.onUserMessage(sessionState.sessionId, msg.text, msg.context).then(() => {
+              commanderChat.onUserMessage(sessionState.sessionId, msg.text).then(() => {
                 for (const chatMsg of commanderChat!.flush()) {
                   broadcast(chatMsg);
                 }
@@ -1592,6 +1593,20 @@ fastify.register(async function (app) {
 
 // Health check
 fastify.get('/api/health', async () => ({ status: 'ok' }));
+
+// Serve pre-built client files (production mode)
+const clientDir = resolve(__dirname, '../public');
+if (existsSync(clientDir)) {
+  await fastify.register(fastifyStatic, { root: clientDir, wildcard: false });
+  // SPA fallback — serve index.html for non-API/non-WS routes
+  fastify.setNotFoundHandler((req, reply) => {
+    if (req.url.startsWith('/api/') || req.url.startsWith('/ws')) {
+      reply.code(404).send({ error: 'Not found' });
+    } else {
+      reply.sendFile('index.html');
+    }
+  });
+}
 
 // Verify LLM connection at startup
 if (llmProvider) {
