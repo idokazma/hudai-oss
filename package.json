@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Visual IDE for AI-powered development",
+  "bin": {
+    "hudai": "./packages/server/bin/hudai.js"
+  },
   "workspaces": [
     "packages/shared",
     "packages/server",
@@ -16,6 +19,7 @@
     "dev:client": "npm run dev -w @hudai/client",
     "build:shared": "npm run build -w @hudai/shared",
     "dev:telegram": "npm run dev -w @hudai/telegram-bot",
+    "build:bundle": "npm run build -w @hudai/shared && npm run build -w @hudai/server && npm run build -w @hudai/client && mkdir -p packages/server/public && cp -r packages/client/dist/* packages/server/public/",
     "test": "vitest run",
     "test:watch": "vitest"
   },
