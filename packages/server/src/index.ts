@@ -361,12 +361,22 @@ async function attachToPane(tmuxTarget: string) {
   agent = new AgentProcess();
   agent.attach({ tmuxTarget });
 
-  agent.on('data', (data: string) => {
-    // Only feed tmux parser when transcript watcher is NOT active
-    // When transcript is active, JSONL provides structured events directly
-    if (!transcriptWatcher?.active) {
-      parser!.feed(data);
-    }
+  agent.on('data', (_data: string) => {
+    // ── Tmux parser is DISABLED — do NOT re-enable ──────────────────
+    //
+    // Previously this fed raw tmux capture-pane output into ClaudeCodeParser
+    // as a fallback when the transcript watcher (JSONL) wasn't active.
+    // This caused problems:
+    //   - User typing at the ❯ prompt was parsed as task.start events
+    //   - Partial/reflowed terminal lines created duplicate or phantom events
+    //   - When no JSONL exists (fresh session, idle prompt), the fallback
+    //     would still run and pollute the build queue with noise
+    //
+    // All structured events now come exclusively from the transcript watcher
+    // which reads Claude Code's JSONL files (~/.claude/projects/<slug>/*.jsonl).
+    // Raw tmux output is only used for PanePreview (live terminal display)
+    // via the 'pane-content' event below.
+    // ─────────────────────────────────────────────────────────────────
   });
 
   agent.on('pane-content', (content: string, caret: { x: number; lineIndex: number } | null) => {
