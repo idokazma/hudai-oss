@@ -2,6 +2,7 @@ import { Component, type ReactNode, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { HudLayout } from './components/HudLayout.js';
 import { HudShell } from './components/HudShell.js';
+import { MobileShell } from './components/Mobile/MobileShell.js';
 import { colors } from './theme/tokens.js';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -27,10 +28,15 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-function useLayoutParam(): 'density' | 'classic' {
+function useLayoutParam(): 'density' | 'classic' | 'mobile' {
   return useMemo(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('layout') === 'density' ? 'density' : 'classic';
+    const layout = params.get('layout');
+    if (layout === 'mobile') return 'mobile';
+    if (layout === 'density') return 'density';
+    // Auto-detect mobile devices
+    if (window.innerWidth < 768 && 'ontouchstart' in window) return 'mobile';
+    return 'classic';
   }, []);
 }
 
@@ -40,7 +46,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      {layout === 'density' ? <HudShell /> : <HudLayout />}
+      {layout === 'mobile' ? <MobileShell /> : layout === 'density' ? <HudShell /> : <HudLayout />}
     </ErrorBoundary>
   );
 }
