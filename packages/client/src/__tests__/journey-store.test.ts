@@ -55,13 +55,11 @@ describe('journey-store helpers (via processEvents)', () => {
     expect(useJourneyStore.getState().entries[0].actions).toContain('?');
   });
 
-  it('maps think.start to ~ action', () => {
+  it('skips think.start events (filtered as noise)', () => {
     useJourneyStore.getState().processEvents([
       makeEvent('think.start', { summary: 'Analyzing...' }),
     ]);
-    const entry = useJourneyStore.getState().entries[0];
-    expect(entry.type).toBe('think');
-    expect(entry.actions).toContain('~');
+    expect(useJourneyStore.getState().entries).toHaveLength(0);
   });
 
   it('skips raw.output events', () => {
@@ -114,12 +112,15 @@ describe('journey grouping', () => {
     expect(entries[0].actions).toContain('E');
   });
 
-  it('splits entries when time gap exceeds 5s', () => {
+  it('merges consecutive same-file events regardless of time gap', () => {
     useJourneyStore.getState().processEvents([
       makeEvent('file.read', { path: '/project/src/a.ts' }, 1000),
       makeEvent('file.read', { path: '/project/src/a.ts' }, 7000),
     ]);
-    expect(useJourneyStore.getState().entries).toHaveLength(2);
+    // Consecutive same-nodeId merges in Phase 1
+    const entries = useJourneyStore.getState().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].endTimestamp).toBe(7000);
   });
 
   it('different files are separate entries', () => {
