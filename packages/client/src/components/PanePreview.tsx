@@ -57,7 +57,8 @@ export function PanePreview() {
     term.loadAddon(fit);
     term.loadAddon(webLinks);
     term.open(containerRef.current);
-    fit.fit();
+    // Delay initial fit to ensure container has been laid out by the grid
+    requestAnimationFrame(() => fit.fit());
 
     // Override wheel events so they always scroll the xterm.js buffer
     // instead of being forwarded as mouse reports to tmux/Claude Code
@@ -193,7 +194,7 @@ export function PanePreview() {
           flex: 1,
           display: tmuxTarget ? 'flex' : 'none',
           flexDirection: 'column',
-          justifyContent: 'flex-end',
+          justifyContent: 'flex-start',
           overflow: 'hidden',
         }}
       >
