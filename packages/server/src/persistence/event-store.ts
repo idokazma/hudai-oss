@@ -67,6 +67,8 @@ export interface SessionSummary {
   claudeSessionId?: string;
   /** How the session was created */
   mode?: 'tmux' | 'stream';
+  /** User-provided session name */
+  label?: string;
 }
 
 export class SessionStore {
@@ -79,7 +81,7 @@ export class SessionStore {
   constructor() {
     const db = getDb();
     this.insertStmt = db.prepare(
-      'INSERT INTO sessions (id, project_path, started_at, status, mode) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO sessions (id, project_path, started_at, status, mode, label) VALUES (?, ?, ?, ?, ?, ?)'
     );
     this.updateStatusStmt = db.prepare(
       'UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?'
@@ -88,7 +90,7 @@ export class SessionStore {
       'UPDATE sessions SET claude_session_id = ? WHERE id = ?'
     );
     this.listStmt = db.prepare(
-      `SELECT s.id, s.project_path, s.started_at, s.ended_at, s.status, s.claude_session_id, s.mode, COUNT(e.id) as event_count
+      `SELECT s.id, s.project_path, s.started_at, s.ended_at, s.status, s.claude_session_id, s.mode, s.label, COUNT(e.id) as event_count
        FROM sessions s LEFT JOIN events e ON e.session_id = s.id
        GROUP BY s.id ORDER BY s.started_at DESC`
     );
@@ -97,8 +99,8 @@ export class SessionStore {
     );
   }
 
-  create(id: string, projectPath: string, mode: 'tmux' | 'stream' = 'tmux') {
-    this.insertStmt.run(id, projectPath, Date.now(), 'running', mode);
+  create(id: string, projectPath: string, mode: 'tmux' | 'stream' = 'tmux', label?: string) {
+    this.insertStmt.run(id, projectPath, Date.now(), 'running', mode, label || null);
   }
 
   complete(id: string) {
@@ -131,6 +133,7 @@ export class SessionStore {
       eventCount: r.event_count,
       claudeSessionId: r.claude_session_id || undefined,
       mode: r.mode || 'tmux',
+      label: r.label || undefined,
     }));
   }
 }

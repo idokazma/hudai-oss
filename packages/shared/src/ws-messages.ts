@@ -16,6 +16,12 @@ export interface SessionSummary {
   endedAt: number | null;
   status: string;
   eventCount: number;
+  /** User-provided session name */
+  label?: string;
+  /** Claude Code session ID for --resume */
+  claudeSessionId?: string;
+  /** How the session was created */
+  mode?: 'tmux' | 'stream';
 }
 
 // Swarm snapshot — compact per-session summary for cross-session awareness
@@ -123,7 +129,7 @@ export type ClientMessage =
   | { kind: 'generate.skill'; description: string }
   | { kind: 'generate.agent'; description: string }
   | { kind: 'generate.save'; type: 'skill' | 'agent'; filename: string; content: string }
-  | { kind: 'agent.start'; projectPath: string; prompt?: string }
+  | { kind: 'agent.start'; projectPath: string; prompt?: string; label: string }
   | { kind: 'agent.resume'; prompt: string }
   | { kind: 'agent.stop' };
 

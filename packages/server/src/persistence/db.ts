@@ -48,6 +48,9 @@ export function getDb(): Database.Database {
   try {
     db.exec(`ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'tmux'`);
   } catch { /* column already exists */ }
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN label TEXT`);
+  } catch { /* column already exists */ }
 
   return db;
 }
