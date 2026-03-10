@@ -105,13 +105,34 @@ export function PanePreview() {
       }
     });
 
-    // Handle resize
+    // ── Terminal fit & resize ──────────────────────────────────────────
+    //
+    // IMPORTANT: How the terminal height model works (and what NOT to change):
+    //
+    // The layout is:  wrapper (flex:1, overflow:hidden)  →  container (flexShrink:0)
+    //
+    // - The wrapper fills the available panel height and clips overflow.
+    // - The container holds xterm and does NOT shrink (flexShrink:0) — this is
+    //   intentional. xterm.js renders at a fixed row count. If the container
+    //   could shrink, xterm would fight the layout engine on every frame.
+    // - wrapper uses `justifyContent: 'flex-end'` so the terminal pins to the
+    //   bottom. When the panel is shorter than the terminal, the TOP gets clipped
+    //   (not the bottom where the user's cursor is). This is the desired behavior.
+    //
+    // We only re-fit (recalculate rows/cols and notify tmux) on WIDTH changes.
+    // Height changes intentionally just clip from the top — re-fitting height
+    // would cause tmux to reflow the entire scrollback on every drag frame,
+    // which is janky and loses the user's scroll position.
+    //
+    // If you see "too many empty lines" in the terminal, that's a tmux pane
+    // size mismatch — the tmux pane has more rows than the xterm viewport.
+    // The fix is to ensure the tmux pane is resized to match on initial attach
+    // (see ws.onopen above), NOT to re-fit on every height change.
+    // ─────────────────────────────────────────────────────────────────
     let lastWidth = containerRef.current.clientWidth;
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current) return;
       const newWidth = containerRef.current.clientWidth;
-      // Only re-fit when width changes (e.g. sidebar resize).
-      // Height changes (dragging top border) should just clip from the top.
       if (newWidth !== lastWidth) {
         lastWidth = newWidth;
         fit.fit();

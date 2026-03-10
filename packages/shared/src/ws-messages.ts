@@ -100,7 +100,7 @@ export type ClientMessage =
   | { kind: 'skill.install'; skillId: string }
   | { kind: 'skill.disable'; path: string }
   | { kind: 'skill.enable'; path: string }
-  | { kind: 'chat.send'; text: string }
+  | { kind: 'chat.send'; text: string; context?: string }
   | { kind: 'chat.requestHistory' }
   | { kind: 'settings.saveKeys'; keys: { geminiApiKey?: string; openaiApiKey?: string; claudeApiKey?: string; telegramBotToken?: string } }
   | { kind: 'settings.getKeys' }
