@@ -59,7 +59,7 @@ export function Dropdown<T extends string>({ value, options, onChange, style }: 
         <div style={{
           position: 'absolute',
           top: '100%',
-          right: 0,
+          left: 0,
           marginTop: 2,
           background: colors.bg.primary,
           border: `1px solid ${colors.border.medium}`,
