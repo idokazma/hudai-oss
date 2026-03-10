@@ -1856,6 +1856,28 @@ fastify.register(async function (app) {
 // Health check
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 
+// ── Filesystem path completion ──────────────────────────────────────
+import { completePath, scanRecentProjects } from './fs/path-completer.js';
+
+// Autocomplete: GET /api/fs/complete?path=/Users/ido/Des → matching directories
+fastify.get('/api/fs/complete', async (request) => {
+  const { path: partial } = request.query as { path?: string };
+  const suggestions = await completePath(partial || '');
+  return { suggestions };
+});
+
+// Recent projects: GET /api/fs/projects → past sessions + scanned git repos
+fastify.get('/api/fs/projects', async () => {
+  const sessions = sessionStore.list();
+  // Extract unique project paths from past sessions (stream mode has real paths, tmux has targets)
+  const pastPaths = sessions
+    .filter((s) => s.mode === 'stream' || s.projectPath.startsWith('/'))
+    .map((s) => s.projectPath)
+    .filter((p, i, arr) => arr.indexOf(p) === i); // deduplicate
+  const projects = await scanRecentProjects(pastPaths);
+  return { projects };
+});
+
 // ── Claude Code Hooks endpoint ─────────────────────────────────────
 // Claude Code posts Notification hook events here when configured with:
 //   { "hooks": { "Notification": [{ "matcher": "...", "hooks": [{ "type": "http", "url": "http://localhost:4200/api/hooks/notification" }] }] } }
