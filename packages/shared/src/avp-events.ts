@@ -12,7 +12,7 @@ export interface AVPEventBase {
   timestamp: number;
   category: AVPCategory;
   type: string;
-  source?: 'tmux' | 'transcript' | 'plan-file';
+  source?: 'tmux' | 'transcript' | 'plan-file' | 'hooks';
   /** Agent ID if this event comes from a sub-agent */
   agentId?: string;
   /** Parent agent ID (null/undefined for root agent) */

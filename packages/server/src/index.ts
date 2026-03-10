@@ -26,6 +26,8 @@ import { loadSecrets, saveSecrets, getSecret, getKeysStatus } from './persistenc
 import { GraphBuilder } from './graph/graph-builder.js';
 import { TranscriptWatcher } from './transcript/transcript-watcher.js';
 import { analyzePaneContent } from './parser/pane-analyzer.js';
+import { HooksHandler } from './hooks/hooks-handler.js';
+import type { ActivityUpdate } from './hooks/hooks-handler.js';
 import { buildAgentConfig } from './config/config-scanner.js';
 import { writePermissionToggle } from './config/settings-reader.js';
 import { getBuiltinSkill, BUILTIN_SKILLS } from './config/builtin-skills.js';
@@ -74,6 +76,10 @@ let lastPaneChangeAt: number = Date.now();
 let idleNotified: boolean = false;
 let cachedConfig: AgentConfig | null = null;
 const activeSubagents = new Map<string, { type: string; startedAt: number }>();
+const hooksHandler = new HooksHandler();
+/** When true, activity state comes from hooks — pane-analyzer is bypassed */
+let hooksActive = false;
+let lastHookActivityAt = 0;
 const permissionStats = new PermissionStats();
 const tokenTracker = new TokenTracker();
 const loopDetector = new LoopDetector();
@@ -168,6 +174,59 @@ function updateSessionState(patch: Partial<SessionState>) {
   broadcast({ kind: 'session.state', state: sessionState });
 }
 
+/**
+ * Apply an activity update from either hooks or pane-analyzer.
+ * Centralizes the activity → session state transition logic.
+ */
+function applyActivityUpdate(update: ActivityUpdate) {
+  const activityChanged = update.activity !== sessionState.agentActivity;
+  const detailChanged = update.detail !== sessionState.agentActivityDetail;
+
+  if (!activityChanged && !detailChanged) return;
+
+  // Reset idle flag when agent resumes working
+  if (activityChanged && sessionState.agentActivity === 'waiting_input' && update.activity !== 'waiting_input') {
+    idleNotified = false;
+  }
+
+  // Mark idle when agent transitions to waiting_input
+  if (update.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
+    idleNotified = true;
+  }
+
+  // Forward activity transitions to insight engine
+  if (activityChanged && insightEngine) {
+    insightEngine.activityChanged(sessionState.agentActivity, update.activity);
+    if (commanderChat) {
+      for (const msg of commanderChat.flush()) {
+        broadcast(msg);
+      }
+    }
+  }
+
+  // Emit permission.prompt event for the event log
+  if (update.activity === 'waiting_permission' && sessionState.agentActivity !== 'waiting_permission') {
+    handleEvent({
+      id: crypto.randomUUID(),
+      sessionId: sessionState.sessionId,
+      timestamp: Date.now(),
+      category: 'control',
+      type: 'permission.prompt',
+      source: 'hooks',
+      data: {
+        tool: update.detail?.split(':')[0]?.trim() || 'Unknown',
+        command: update.detail || 'Permission requested',
+      },
+    } as AVPEvent);
+  }
+
+  updateSessionState({
+    agentActivity: update.activity,
+    agentActivityDetail: update.detail,
+    agentActivityOptions: update.options,
+  });
+}
+
 const seenPrompts = new Set<string>();
 
 function handleEvent(event: AVPEvent) {
@@ -176,6 +235,15 @@ function handleEvent(event: AVPEvent) {
     const prompt = ((event as any).data?.prompt || '').trim();
     if (prompt && seenPrompts.has(prompt)) return;
     if (prompt) seenPrompts.add(prompt);
+  }
+
+  // When hooks are active and we receive JSONL events, transition to 'working'
+  // (hooks don't fire a "working" notification — we infer it from new events)
+  if (hooksActive && sessionState.agentActivity !== 'working') {
+    const workEvents = ['file.read', 'file.edit', 'file.create', 'exec.start', 'think.start', 'plan.update'];
+    if (workEvents.includes(event.type)) {
+      applyActivityUpdate({ activity: 'working' });
+    }
   }
 
   eventStore.insert(event);
@@ -388,14 +456,36 @@ async function attachToPane(tmuxTarget: string) {
     lastPaneContent = content;
     broadcast({ kind: 'pane.content', content, caret });
 
-    // Stale detection: if pane hasn't changed for 120s and agent is "working",
-    // it's actually idle (Claude Code finished but prompt pattern wasn't detected)
+    // ── When hooks are active, skip pane-based activity detection ──
+    // Activity state comes from Claude Code's Notification hooks (POST /api/hooks/notification).
+    // Pane content is only used for PanePreview (live terminal display).
+    if (hooksActive) {
+      // Still do stale detection as a safety net — hooks should fire idle_prompt,
+      // but if they don't (e.g. hook misconfigured), fall back after 120s
+      const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
+      const hookStaleSec = (Date.now() - lastHookActivityAt) / 1000;
+      if (
+        staleSec >= 120 &&
+        hookStaleSec >= 120 &&
+        !idleNotified &&
+        sessionState.agentActivity === 'working'
+      ) {
+        idleNotified = true;
+        applyActivityUpdate({
+          activity: 'waiting_input',
+          detail: 'Agent appears idle (no output or hooks for 2 min)',
+        });
+      }
+      return;
+    }
+
+    // ── Fallback: pane-based activity detection (when hooks are NOT active) ──
     const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
     const analysis = analyzePaneContent(content);
     if (
       staleSec >= 120 &&
       !idleNotified &&
-      analysis.activity === 'working' // not already detected as waiting_input/permission/answer
+      analysis.activity === 'working'
     ) {
       idleNotified = true;
       broadcast({
@@ -408,7 +498,6 @@ async function attachToPane(tmuxTarget: string) {
           timestamp: Date.now(),
         },
       });
-      // Also update session state to waiting_input
       updateSessionState({
         agentActivity: 'waiting_input',
         agentActivityDetail: 'Agent appears idle (no output for 2 min)',
@@ -416,22 +505,15 @@ async function attachToPane(tmuxTarget: string) {
       return;
     }
 
-    // Analyze pane content to detect agent activity state
-    // Also broadcast when detail changes (e.g. new question in interview-style flow)
     const activityChanged = analysis.activity !== sessionState.agentActivity;
     const detailChanged = analysis.detail !== sessionState.agentActivityDetail;
 
-    // Reset idle flag only when pane content genuinely changed (agent started working again).
-    // Without the contentChanged guard, the analyzer can flap between 'working' and
-    // 'waiting_input' on the same stale pane, causing repeated idle notifications.
     if (activityChanged && sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
       idleNotified = false;
     }
 
-    // Forward activity transitions to insight engine for proactive triggers
     if (activityChanged && insightEngine) {
       insightEngine.activityChanged(sessionState.agentActivity, analysis.activity);
-      // Flush any resulting chat messages
       if (commanderChat) {
         for (const msg of commanderChat.flush()) {
           broadcast(msg);
@@ -440,14 +522,10 @@ async function attachToPane(tmuxTarget: string) {
     }
 
     if (activityChanged || (detailChanged && (analysis.activity === 'waiting_answer' || analysis.activity === 'waiting_permission'))) {
-      // Mark idle when agent transitions to waiting_input
-      // The session.state broadcast below already carries this — no separate notification needed
       if (analysis.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
         idleNotified = true;
       }
 
-      // Emit permission.prompt event when pane analysis detects waiting_permission
-      // This handles the case where transcript watcher is active and tmux parser is bypassed
       if (analysis.activity === 'waiting_permission' && sessionState.agentActivity !== 'waiting_permission') {
         handleEvent({
           id: crypto.randomUUID(),
@@ -753,6 +831,8 @@ function detachFromPane() {
   subagentWatcher = null;
   planFileWatcher = null;
   lastPaneContent = '';
+  hooksActive = false;
+  lastHookActivityAt = 0;
   seenPrompts.clear();
   cachedConfig = null;
   cachedPipelineLayer = null;
@@ -1606,6 +1686,51 @@ fastify.register(async function (app) {
 
 // Health check
 fastify.get('/api/health', async () => ({ status: 'ok' }));
+
+// ── Claude Code Hooks endpoint ─────────────────────────────────────
+// Claude Code posts Notification hook events here when configured with:
+//   { "hooks": { "Notification": [{ "matcher": "...", "hooks": [{ "type": "http", "url": "http://localhost:4200/api/hooks/notification" }] }] } }
+//
+// This replaces tmux pane-analyzer for activity state detection.
+fastify.post('/api/hooks/notification', async (request, reply) => {
+  const body = request.body as Record<string, any> | undefined;
+  if (!body || typeof body !== 'object') {
+    return reply.status(400).send({ error: 'Invalid request body' });
+  }
+
+  // Mark hooks as active on first notification received
+  if (!hooksActive) {
+    hooksActive = true;
+    console.log('[hooks] First notification received — hooks are now the primary activity source');
+  }
+  lastHookActivityAt = Date.now();
+
+  const update = hooksHandler.handleNotification({
+    matcher: body.matcher || body.type || '',
+    message: body.message,
+    tool: body.tool,
+    command: body.command,
+    question: body.question,
+    options: body.options,
+  });
+
+  if (update) {
+    applyActivityUpdate(update);
+  }
+
+  return { ok: true };
+});
+
+// Explicit "working" transition — called when Claude Code starts processing
+// (hooks don't fire a "working" notification, so we infer it from JSONL activity or this endpoint)
+fastify.post('/api/hooks/working', async (request, reply) => {
+  if (!hooksActive) {
+    hooksActive = true;
+  }
+  lastHookActivityAt = Date.now();
+  applyActivityUpdate({ activity: 'working', detail: undefined });
+  return { ok: true };
+});
 
 // Serve pre-built client files (production mode)
 const clientDir = resolve(__dirname, '../public');
