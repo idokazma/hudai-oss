@@ -12,9 +12,9 @@ export interface JourneyEntry {
   timestamp: number;
   endTimestamp?: number;
   eventIds: string[];
+  /** Number of times this node was revisited (for file dedup) */
+  visits: number;
 }
-
-const GROUP_WINDOW_MS = 5000;
 
 function eventToJourneyType(event: AVPEvent): JourneyEntry['type'] {
   switch (event.type) {
@@ -85,9 +85,9 @@ function eventLabel(event: AVPEvent): string {
     case 'test.run':
       return data?.command?.slice(0, 60) ?? 'Running tests';
     case 'test.result':
-      return `Tests: ${data?.passed ?? 0} passed, ${data?.failed ?? 0} failed`;
+      return `${data?.passed ?? 0} passed, ${data?.failed ?? 0} failed`;
     case 'plan.update':
-      return `Plan: ${data?.steps?.length ?? 0} steps`;
+      return `${data?.steps?.length ?? 0} steps`;
     case 'task.start':
       return data?.prompt?.slice(0, 60) ?? 'Task started';
     default:
@@ -113,12 +113,8 @@ function eventDetail(event: AVPEvent): string | undefined {
   }
 }
 
-/** Convert a file path to a graph node ID (relative path) */
 function pathToNodeId(filePath: string): string {
-  // Strip common absolute prefixes — the graph uses relative paths
-  // This is a best-effort match; the graph store's pathToId map would be more accurate
   const parts = filePath.split('/');
-  // Find 'src' or 'packages' as anchor
   for (let i = 0; i < parts.length; i++) {
     if (parts[i] === 'src' || parts[i] === 'packages' || parts[i] === 'lib') {
       return parts.slice(i).join('/');
@@ -140,36 +136,40 @@ export const useJourneyStore = create<JourneyStore>((set) => ({
   selectedEntryId: null,
 
   processEvents: (events) => {
-    const entries: JourneyEntry[] = [];
+    // Phase 1: Build raw sequential entries with consecutive grouping
+    const raw: JourneyEntry[] = [];
     let current: JourneyEntry | null = null;
 
     for (const event of events) {
-      // Skip noise events
       if (event.type === 'raw.output' || event.type === 'detail.collapsed') continue;
 
       const jType = eventToJourneyType(event);
+      // Skip control/think noise
+      if (jType === 'control' || jType === 'think') continue;
+
       const filePath = eventFilePath(event);
       const nodeId = filePath ? pathToNodeId(filePath) : null;
       const action = eventAction(event);
 
-      // Try to merge with current entry if same file within time window
-      if (
-        current &&
-        jType === 'file' &&
-        current.type === 'file' &&
-        current.nodeId === nodeId &&
-        event.timestamp - (current.endTimestamp ?? current.timestamp) < GROUP_WINDOW_MS
-      ) {
-        if (action && !current.actions.includes(action)) {
-          current.actions.push(action);
+      // Merge consecutive same-file or same-type events
+      if (current) {
+        const sameFile = jType === 'file' && current.type === 'file' && current.nodeId === nodeId;
+        const sameType = jType !== 'file' && jType === current.type;
+        if (sameFile || sameType) {
+          if (action && !current.actions.includes(action)) {
+            current.actions.push(action);
+          }
+          current.endTimestamp = event.timestamp;
+          current.eventIds.push(event.id);
+          // Update label for test results
+          if (event.type === 'test.result') {
+            current.label = eventLabel(event);
+          }
+          continue;
         }
-        current.endTimestamp = event.timestamp;
-        current.eventIds.push(event.id);
-        continue;
       }
 
-      // Finalize previous entry
-      if (current) entries.push(current);
+      if (current) raw.push(current);
 
       current = {
         id: event.id,
@@ -181,12 +181,35 @@ export const useJourneyStore = create<JourneyStore>((set) => ({
         detail: eventDetail(event),
         timestamp: event.timestamp,
         eventIds: [event.id],
+        visits: 1,
       };
     }
 
-    if (current) entries.push(current);
+    if (current) raw.push(current);
 
-    set({ entries });
+    // Phase 2: Deduplicate files — merge entries with same nodeId
+    const deduped: JourneyEntry[] = [];
+    const fileMap = new Map<string, number>(); // nodeId → index in deduped
+
+    for (const entry of raw) {
+      if (entry.type === 'file' && entry.nodeId) {
+        const existing = fileMap.get(entry.nodeId);
+        if (existing !== undefined) {
+          const target = deduped[existing];
+          for (const a of entry.actions) {
+            if (!target.actions.includes(a)) target.actions.push(a);
+          }
+          target.endTimestamp = entry.timestamp;
+          target.eventIds.push(...entry.eventIds);
+          target.visits++;
+          continue;
+        }
+        fileMap.set(entry.nodeId, deduped.length);
+      }
+      deduped.push(entry);
+    }
+
+    set({ entries: deduped });
   },
 
   selectEntry: (id) => set({ selectedEntryId: id }),
