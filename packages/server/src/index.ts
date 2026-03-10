@@ -907,7 +907,7 @@ async function startAgent(options: { projectPath: string; prompt?: string }) {
   stopAgent();
 
   const sessionId = crypto.randomUUID();
-  sessionStore.create(sessionId, options.projectPath);
+  sessionStore.create(sessionId, options.projectPath, 'stream');
 
   // Build codebase graph from project path
   try {
@@ -945,6 +945,10 @@ async function startAgent(options: { projectPath: string; prompt?: string }) {
 
   agentHost.on('result', (result: any) => {
     console.log(`[agent-host] Completed: ${result.subtype} (session: ${result.sessionId})`);
+    // Persist Claude's session ID for future --resume
+    if (result.sessionId) {
+      sessionStore.setClaudeSessionId(sessionId, result.sessionId);
+    }
     broadcast({ kind: 'agent.status', running: false, claudeSessionId: result.sessionId });
     applyActivityUpdate({ activity: 'waiting_input', detail: 'Task complete' });
     updateSessionState({ status: 'complete' });

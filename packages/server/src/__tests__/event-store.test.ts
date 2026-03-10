@@ -20,7 +20,9 @@ function createTestDb() {
       project_path TEXT NOT NULL,
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
-      status TEXT NOT NULL DEFAULT 'running'
+      status TEXT NOT NULL DEFAULT 'running',
+      claude_session_id TEXT,
+      mode TEXT DEFAULT 'tmux'
     );
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
