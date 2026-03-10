@@ -1556,6 +1556,9 @@ fastify.register(async function (app) {
     // Disable alternate screen so future apps stay in normal buffer with scrollback
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" -w alternate-screen off`, { stdio: 'ignore' }); } catch {}
 
+    // Hide tmux status bar — Hudai provides its own chrome
+    try { execSync(`${tmuxBin} set-option -t "${sessionName}" status off`, { stdio: 'ignore' }); } catch {}
+
     // Spawn tmux attach inside a real PTY
     const ptyProcess = nodePty.spawn(tmuxBin, ['attach-session', '-t', target], {
       cols: 80,
