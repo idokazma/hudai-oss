@@ -9,6 +9,8 @@ import { CodebaseMap } from '../CodebaseMap/CodebaseMap.js';
 import { CurrentActionWidget } from '../RightPanel/CurrentActionWidget.js';
 import { CommanderChat } from '../RightPanel/CommanderChat.js';
 import { DeepLeftPanel } from '../DeepDiveMode/DeepLeftPanel.js';
+import { ConfigSlideOver } from '../ConfigSlideOver/ConfigSlideOver.js';
+import { useConfigPanelStore } from '../../stores/config-panel-store.js';
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   idle: { label: 'IDLE', color: colors.status.successLight },
@@ -21,6 +23,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 export function WorkMode() {
   const session = useSessionStore((s) => s.session);
   const setMode = useDensityStore((s) => s.setMode);
+  const toggleConfig = useConfigPanelStore((s) => s.toggle);
   const mapped = STATUS_MAP[session.status] ?? STATUS_MAP.idle;
 
   const [showPlanPanel, setShowPlanPanel] = useState(false);
@@ -201,7 +204,7 @@ export function WorkMode() {
 
         {/* Gear */}
         <button
-          onClick={() => console.log('config')}
+          onClick={toggleConfig}
           style={{
             background: 'none',
             border: 'none',
@@ -280,6 +283,8 @@ export function WorkMode() {
       ) : (
         <div style={{ gridColumn: '1 / -1', display: 'none' }} />
       )}
+
+      <ConfigSlideOver />
     </div>
   );
 }

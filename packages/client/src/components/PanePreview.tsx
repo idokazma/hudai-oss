@@ -10,6 +10,7 @@ import { colors } from '../theme/tokens.js';
 export function PanePreview() {
   const tmuxTarget = useSessionStore((s) => s.session.tmuxTarget);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const clipRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -147,17 +148,32 @@ export function PanePreview() {
     });
     resizeObserver.observe(containerRef.current);
 
-    // Forward wheel events from the clipped wrapper area to xterm
-    const wrapper = wrapperRef.current;
-    const onWrapperWheel = (ev: WheelEvent) => {
-      ev.preventDefault();
-      const lines = ev.deltaY > 0 ? 3 : -3;
-      term.scrollLines(lines);
+    // Trim trailing empty lines — clip via a wrapper so xterm's own sizing is unaffected
+    const trimEmpty = () => {
+      if (!clipRef.current || !containerRef.current) return;
+      const buf = term.buffer.active;
+      let lastNonEmpty = 0;
+      for (let i = term.rows - 1; i >= 0; i--) {
+        const line = buf.getLine(buf.baseY + i);
+        if (line && line.translateToString(true).trim().length > 0) {
+          lastNonEmpty = i + 1;
+          break;
+        }
+      }
+      const visibleRows = Math.max(lastNonEmpty, buf.cursorY + 1);
+      if (visibleRows >= term.rows) {
+        clipRef.current.style.height = '';
+        return;
+      }
+      const screen = containerRef.current.querySelector('.xterm-screen') as HTMLElement;
+      if (!screen) return;
+      const cellHeight = screen.clientHeight / term.rows;
+      clipRef.current.style.height = `${Math.ceil(visibleRows * cellHeight)}px`;
     };
-    wrapper?.addEventListener('wheel', onWrapperWheel, { passive: false });
+    const renderDisposable = term.onRender(() => trimEmpty());
 
     return () => {
-      wrapper?.removeEventListener('wheel', onWrapperWheel);
+      renderDisposable.dispose();
       resizeObserver.disconnect();
       ws.close();
       term.dispose();
@@ -195,13 +211,16 @@ export function PanePreview() {
           display: tmuxTarget ? 'flex' : 'none',
           flexDirection: 'column',
           justifyContent: 'flex-start',
-          overflow: 'hidden',
+          overflowY: 'auto',
+          overflowX: 'hidden',
         }}
       >
         <div
-          ref={containerRef}
-          style={{ flexShrink: 0 }}
-        />
+          ref={clipRef}
+          style={{ flexShrink: 0, overflow: 'hidden' }}
+        >
+          <div ref={containerRef} />
+        </div>
       </div>
     </div>
   );
