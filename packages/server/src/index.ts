@@ -9,7 +9,8 @@ import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import type { WebSocket } from 'ws';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { watch, type FSWatcher } from 'node:fs';
+import { existsSync, watch, type FSWatcher } from 'node:fs';
+import fastifyStatic from '@fastify/static';
 import { join } from 'node:path';
 import { execSync, fork, type ChildProcess } from 'node:child_process';
 // @ts-ignore — @lydell/node-pty has types but exports field doesn't resolve them
@@ -360,12 +361,22 @@ async function attachToPane(tmuxTarget: string) {
   agent = new AgentProcess();
   agent.attach({ tmuxTarget });
 
-  agent.on('data', (data: string) => {
-    // Only feed tmux parser when transcript watcher is NOT active
-    // When transcript is active, JSONL provides structured events directly
-    if (!transcriptWatcher?.active) {
-      parser!.feed(data);
-    }
+  agent.on('data', (_data: string) => {
+    // ── Tmux parser is DISABLED — do NOT re-enable ──────────────────
+    //
+    // Previously this fed raw tmux capture-pane output into ClaudeCodeParser
+    // as a fallback when the transcript watcher (JSONL) wasn't active.
+    // This caused problems:
+    //   - User typing at the ❯ prompt was parsed as task.start events
+    //   - Partial/reflowed terminal lines created duplicate or phantom events
+    //   - When no JSONL exists (fresh session, idle prompt), the fallback
+    //     would still run and pollute the build queue with noise
+    //
+    // All structured events now come exclusively from the transcript watcher
+    // which reads Claude Code's JSONL files (~/.claude/projects/<slug>/*.jsonl).
+    // Raw tmux output is only used for PanePreview (live terminal display)
+    // via the 'pane-content' event below.
+    // ─────────────────────────────────────────────────────────────────
   });
 
   agent.on('pane-content', (content: string, caret: { x: number; lineIndex: number } | null) => {
@@ -1017,7 +1028,7 @@ fastify.register(async function (app) {
 
           case 'chat.send': {
             if (commanderChat && serviceEnabled.llm && sessionState.sessionId) {
-              commanderChat.onUserMessage(sessionState.sessionId, msg.text, msg.context).then(() => {
+              commanderChat.onUserMessage(sessionState.sessionId, msg.text).then(() => {
                 for (const chatMsg of commanderChat!.flush()) {
                   broadcast(chatMsg);
                 }
@@ -1592,6 +1603,20 @@ fastify.register(async function (app) {
 
 // Health check
 fastify.get('/api/health', async () => ({ status: 'ok' }));
+
+// Serve pre-built client files (production mode)
+const clientDir = resolve(__dirname, '../public');
+if (existsSync(clientDir)) {
+  await fastify.register(fastifyStatic, { root: clientDir, wildcard: false });
+  // SPA fallback — serve index.html for non-API/non-WS routes
+  fastify.setNotFoundHandler((req, reply) => {
+    if (req.url.startsWith('/api/') || req.url.startsWith('/ws')) {
+      reply.code(404).send({ error: 'Not found' });
+    } else {
+      reply.sendFile('index.html');
+    }
+  });
+}
 
 // Verify LLM connection at startup
 if (llmProvider) {
