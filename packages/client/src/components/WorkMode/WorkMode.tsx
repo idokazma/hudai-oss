@@ -6,11 +6,12 @@ import { useResizablePanel } from '../../hooks/useResizablePanel.js';
 import { ResizeHandle } from '../ResizeHandle.js';
 import { PanePreview } from '../PanePreview.js';
 import { CodebaseMap } from '../CodebaseMap/CodebaseMap.js';
-import { CurrentActionWidget } from '../RightPanel/CurrentActionWidget.js';
 import { CommanderChat } from '../RightPanel/CommanderChat.js';
 import { DeepLeftPanel } from '../DeepDiveMode/DeepLeftPanel.js';
 import { ConfigSlideOver } from '../ConfigSlideOver/ConfigSlideOver.js';
 import { useConfigPanelStore } from '../../stores/config-panel-store.js';
+import { wsClient } from '../../ws/ws-client.js';
+import type { ServerMessage } from '@hudai/shared';
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   idle: { label: 'IDLE', color: colors.status.successLight },
@@ -28,6 +29,14 @@ export function WorkMode() {
 
   const [showPlanPanel, setShowPlanPanel] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [services, setServices] = useState({ llm: false, telegram: false, library: false });
+
+  useEffect(() => {
+    const unsub = wsClient.onMessage((msg: ServerMessage) => {
+      if (msg.kind === 'service.status') setServices(msg.services);
+    });
+    return () => { unsub(); };
+  }, []);
 
   const terminal = useResizablePanel({
     direction: 'vertical',
@@ -180,6 +189,48 @@ export function WorkMode() {
 
         <div style={{ flex: 1 }} />
 
+        {/* Service dots */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginRight: 8 }}>
+          {([
+            { key: 'llm' as const, label: 'LLM', icon: '🧠' },
+            { key: 'telegram' as const, label: 'TG', icon: '✈' },
+            { key: 'library' as const, label: 'LIB', icon: '📚' },
+          ]).map((svc) => {
+            const on = services[svc.key];
+            return (
+              <button
+                key={svc.key}
+                title={`${svc.label}: ${on ? 'on — click to disable' : 'off — click to enable'}`}
+                onClick={() => wsClient.send({ kind: 'service.toggle', service: svc.key, enabled: !on })}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '2px 4px',
+                  borderRadius: 4,
+                  opacity: on ? 1 : 0.5,
+                  transition: 'opacity 0.2s',
+                }}
+              >
+                <span style={{ fontSize: 10 }}>{svc.icon}</span>
+                <div style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: on ? colors.status.successLight : colors.text.dimmed,
+                  boxShadow: on ? `0 0 4px ${alpha(colors.status.successLight, 0.5)}` : 'none',
+                  transition: 'all 0.3s',
+                }} />
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ width: 1, height: 16, background: colors.border.subtle }} />
+
         {/* Toggle buttons */}
         <ToggleBtn
           label="P"
@@ -237,7 +288,7 @@ export function WorkMode() {
         </div>
       </div>
 
-      {/* ── Right sidebar (optional) ── */}
+      {/* ── Right sidebar (optional) — Chat only ── */}
       {!sidebar.collapsed && (
         <div
           style={{
@@ -249,15 +300,7 @@ export function WorkMode() {
             width: sidebar.size,
           }}
         >
-          {/* Activity feed */}
-          <div style={{ flex: 1, overflow: 'hidden', borderBottom: `1px solid ${colors.border.subtle}`, minHeight: 0 }}>
-            <CurrentActionWidget />
-          </div>
-
-          {/* Chat */}
-          <div style={{ flex: '0 0 40%', overflow: 'hidden', minHeight: 0 }}>
-            <CommanderChat />
-          </div>
+          <CommanderChat />
         </div>
       )}
 

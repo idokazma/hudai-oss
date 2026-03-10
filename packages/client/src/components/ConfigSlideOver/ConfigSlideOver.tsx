@@ -2,19 +2,27 @@ import { useEffect, useCallback, useState } from 'react';
 import { useConfigPanelStore } from '../../stores/config-panel-store.js';
 import { useConfigStore } from '../../stores/config-store.js';
 import { wsClient } from '../../ws/ws-client.js';
-import { colors, fonts } from '../../theme/tokens.js';
+import { colors, alpha, fonts } from '../../theme/tokens.js';
+import { getAgentIcon } from '../shared/agent-icons.js';
+import type { AgentDefinition } from '@hudai/shared';
 
-const PERMISSION_PRESETS: Array<{ tool: string; label: string }> = [
-  { tool: 'Bash(npm *)', label: 'npm' },
-  { tool: 'Bash(npx *)', label: 'npx' },
-  { tool: 'Bash(node *)', label: 'node' },
-  { tool: 'Bash(git *)', label: 'git' },
-  { tool: 'Bash(gh *)', label: 'gh' },
-  { tool: 'Bash(ls *)', label: 'ls' },
-  { tool: 'Bash(mkdir *)', label: 'mkdir' },
-  { tool: 'Bash(curl *)', label: 'curl' },
-  { tool: 'WebSearch', label: 'WebSearch' },
-  { tool: 'Bash(docker *)', label: 'docker' },
+function spawnAgentPrompt(agent: AgentDefinition): string {
+  const subagentType = agent.rolePrompt ? 'general-purpose' : agent.name;
+  const roleInstr = agent.rolePrompt ? `\nSubagent role: ${agent.rolePrompt}\n` : '';
+  return `Use a subagent (Task tool, subagent_type="${subagentType}") to work on this project.\n\n${agent.description ? `Agent purpose: ${agent.description}\n` : ''}${roleInstr}The subagent should: 1) Read CLAUDE.md and understand the project structure, 2) Explore the codebase to build context, 3) Identify areas relevant to its purpose and report findings or take action.`;
+}
+
+const PERMISSION_PRESETS: Array<{ tool: string; label: string; icon: string }> = [
+  { tool: 'Bash(npm *)', label: 'npm', icon: '📦' },
+  { tool: 'Bash(npx *)', label: 'npx', icon: '📦' },
+  { tool: 'Bash(node *)', label: 'node', icon: '🟢' },
+  { tool: 'Bash(git *)', label: 'git', icon: '🔀' },
+  { tool: 'Bash(gh *)', label: 'gh', icon: '🐙' },
+  { tool: 'Bash(ls *)', label: 'ls', icon: '📂' },
+  { tool: 'Bash(mkdir *)', label: 'mkdir', icon: '📁' },
+  { tool: 'Bash(curl *)', label: 'curl', icon: '🌐' },
+  { tool: 'WebSearch', label: 'WebSearch', icon: '🔍' },
+  { tool: 'Bash(docker *)', label: 'docker', icon: '🐳' },
 ];
 
 export function ConfigSlideOver() {
@@ -140,7 +148,7 @@ export function ConfigSlideOver() {
             <>
               {/* Suggestions */}
               {suggestions.length > 0 && (
-                <Section title="Suggestions">
+                <Section icon="💡" title="Suggestions">
                   {suggestions.map((s) => (
                     <div key={s.tool} style={{
                       display: 'flex',
@@ -206,13 +214,14 @@ export function ConfigSlideOver() {
               )}
 
               {/* Permissions */}
-              <Section title="Permissions">
+              <Section icon="🔒" title="Permissions">
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {PERMISSION_PRESETS.map((preset) => {
                     const isAllowed = allowedTools.has(preset.tool);
                     return (
                       <PermToggle
                         key={preset.tool}
+                        icon={preset.icon}
                         label={preset.label}
                         active={isAllowed}
                         onClick={() => handlePresetToggle(preset.tool, isAllowed)}
@@ -222,9 +231,72 @@ export function ConfigSlideOver() {
                 </div>
               </Section>
 
+              {/* Agents */}
+              {config.agents.length > 0 && (
+                <Section icon="🤖" title="Agents">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {config.agents.map((agent) => {
+                      const ai = getAgentIcon(agent.name);
+                      return (
+                      <div key={agent.path + agent.name} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '6px 8px',
+                        borderRadius: 4,
+                        background: colors.surface.base,
+                        borderLeft: `3px solid ${ai.color}`,
+                      }}>
+                        <span style={{ fontSize: 16, flexShrink: 0 }}>{ai.icon}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontSize: 12,
+                            fontFamily: fonts.mono,
+                            color: colors.text.primary,
+                          }}>
+                            {agent.name}
+                          </div>
+                          {agent.description && (
+                            <div style={{
+                              fontSize: 10,
+                              fontFamily: fonts.body,
+                              color: colors.text.muted,
+                              marginTop: 2,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}>
+                              {agent.description}
+                            </div>
+                          )}
+                        </div>
+                        <SpawnButton onClick={() => {
+                          wsClient.send({
+                            kind: 'command',
+                            command: { type: 'prompt', data: { text: spawnAgentPrompt(agent) } },
+                          });
+                          close();
+                        }} />
+                        <span style={{
+                          fontSize: 9,
+                          fontFamily: fonts.mono,
+                          color: colors.text.dimmed,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          background: colors.surface.base,
+                        }}>
+                          {agent.scope}
+                        </span>
+                      </div>
+                      );
+                    })}
+                  </div>
+                </Section>
+              )}
+
               {/* Skills */}
               {config.skills.length > 0 && (
-                <Section title="Skills">
+                <Section icon="⚡" title="Skills">
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {config.skills.map((skill) => {
                       const active = !skill.disabled;
@@ -237,6 +309,7 @@ export function ConfigSlideOver() {
                           borderRadius: 4,
                           background: colors.surface.base,
                         }}>
+                          <span style={{ fontSize: 14, flexShrink: 0, opacity: active ? 1 : 0.4 }}>⚡</span>
                           <span style={{
                             flex: 1,
                             fontSize: 12,
@@ -282,10 +355,13 @@ export function ConfigSlideOver() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
   return (
     <div style={{ padding: '16px 16px 12px' }}>
       <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
         fontSize: 10,
         fontFamily: fonts.mono,
         fontWeight: 600,
@@ -294,6 +370,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         color: colors.text.muted,
         marginBottom: 10,
       }}>
+        <span style={{ fontSize: 13 }}>{icon}</span>
         {title}
       </div>
       {children}
@@ -301,7 +378,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function PermToggle({ label, active, onClick }: {
+function PermToggle({ icon, label, active, onClick }: {
+  icon: string;
   label: string;
   active: boolean;
   onClick: () => void;
@@ -315,6 +393,7 @@ function PermToggle({ label, active, onClick }: {
       style={{
         display: 'inline-flex',
         alignItems: 'center',
+        gap: 5,
         padding: '4px 12px',
         fontSize: 11,
         fontFamily: fonts.mono,
@@ -329,7 +408,31 @@ function PermToggle({ label, active, onClick }: {
         transition: 'all 0.15s',
       }}
     >
+      <span style={{ fontSize: 12 }}>{icon}</span>
       {label}
+    </button>
+  );
+}
+
+function SpawnButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Spawn subagent"
+      style={{
+        padding: '3px 8px',
+        fontSize: 10,
+        fontFamily: fonts.mono,
+        fontWeight: 600,
+        borderRadius: 3,
+        border: `1px solid ${alpha(colors.accent.primary, 0.3)}`,
+        background: alpha(colors.accent.primary, 0.12),
+        color: colors.accent.light,
+        cursor: 'pointer',
+        flexShrink: 0,
+      }}
+    >
+      Spawn
     </button>
   );
 }
