@@ -73,6 +73,8 @@ export type ServerMessage =
   | { kind: 'service.status'; services: { llm: boolean; telegram: boolean; library: boolean } }
   | { kind: 'swarm.status'; sessions: SwarmSnapshot[] }
   | { kind: 'generate.result'; type: 'skill' | 'agent'; name: string; filename: string; content: string; success: boolean; error?: string }
+  | { kind: 'agent.output'; text: string; append: boolean }
+  | { kind: 'agent.status'; running: boolean; claudeSessionId?: string }
   | { kind: 'error'; message: string };
 
 export interface TmuxPane {
@@ -120,7 +122,10 @@ export type ClientMessage =
   | { kind: 'permission.toggle'; tool: string; type: 'allow' | 'deny'; enabled: boolean }
   | { kind: 'generate.skill'; description: string }
   | { kind: 'generate.agent'; description: string }
-  | { kind: 'generate.save'; type: 'skill' | 'agent'; filename: string; content: string };
+  | { kind: 'generate.save'; type: 'skill' | 'agent'; filename: string; content: string }
+  | { kind: 'agent.start'; projectPath: string; prompt?: string }
+  | { kind: 'agent.resume'; prompt: string }
+  | { kind: 'agent.stop' };
 
 export type AgentActivity =
   | 'working'           // Actively processing (thinking, tool use, etc.)
@@ -160,6 +165,8 @@ export interface SessionState {
   activeSubagentCount?: number;
   /** Current tmux target pane ID (e.g. "lettersAgent:0.0") */
   tmuxTarget?: string;
+  /** Backend mode: 'tmux' (attach to existing) or 'stream' (--print subprocess) */
+  mode?: 'tmux' | 'stream';
   /** LLM (Gemini) connection status */
   llmStatus?: LlmStatus;
   /** Current LLM activity label (e.g. "Analyzing plan", "Generating insight") */

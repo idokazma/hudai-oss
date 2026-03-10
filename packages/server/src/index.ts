@@ -28,6 +28,8 @@ import { TranscriptWatcher } from './transcript/transcript-watcher.js';
 import { analyzePaneContent } from './parser/pane-analyzer.js';
 import { HooksHandler } from './hooks/hooks-handler.js';
 import type { ActivityUpdate } from './hooks/hooks-handler.js';
+import { AgentHost } from './agent/agent-host.js';
+import { StreamCommandHandler } from './agent/stream-command-handler.js';
 import { buildAgentConfig } from './config/config-scanner.js';
 import { writePermissionToggle } from './config/settings-reader.js';
 import { getBuiltinSkill, BUILTIN_SKILLS } from './config/builtin-skills.js';
@@ -80,6 +82,9 @@ const hooksHandler = new HooksHandler();
 /** When true, activity state comes from hooks — pane-analyzer is bypassed */
 let hooksActive = false;
 let lastHookActivityAt = 0;
+let agentHost: AgentHost | null = null;
+let streamCommandHandler: StreamCommandHandler | null = null;
+let streamOutput: string[] = [];
 const permissionStats = new PermissionStats();
 const tokenTracker = new TokenTracker();
 const loopDetector = new LoopDetector();
@@ -398,7 +403,10 @@ function updateBreadcrumb() {
 }
 
 async function attachToPane(tmuxTarget: string) {
-  // Detach from any existing session
+  // Clean up any existing connections (stream or tmux)
+  if (agentHost) {
+    stopAgent();
+  }
   if (agent?.running) {
     agent.detach();
   }
@@ -562,6 +570,7 @@ async function attachToPane(tmuxTarget: string) {
     agentCurrentFile: null,
     taskLabel: tmuxTarget.split(':')[0] || tmuxTarget,
     tmuxTarget,
+    mode: 'tmux',
     startedAt: Date.now(),
     eventCount: 0,
     llmStatus: llmProvider ? llmProvider.status : 'unavailable',
@@ -851,9 +860,130 @@ function detachFromPane() {
     agentCurrentFile: null,
     taskLabel: 'No active task',
     tmuxTarget: undefined,
+    mode: undefined,
     startedAt: 0,
     eventCount: 0,
   });
+}
+
+/**
+ * Stop the stream-json agent host and clean up.
+ */
+function stopAgent() {
+  if (agentHost) {
+    agentHost.destroy();
+    agentHost = null;
+  }
+  streamCommandHandler = null;
+  streamOutput = [];
+  hooksActive = false;
+  lastHookActivityAt = 0;
+  seenPrompts.clear();
+  activeSubagents.clear();
+  permissionStats.clear();
+  tokenTracker.reset();
+  loopDetector.reset();
+  insightEngine?.reset();
+  commanderChat?.reset();
+  updateSessionState({
+    sessionId: '',
+    status: 'idle',
+    agentCurrentFile: null,
+    taskLabel: 'No active task',
+    mode: undefined,
+    startedAt: 0,
+    eventCount: 0,
+  });
+}
+
+/**
+ * Start a Claude Code agent in stream-json mode.
+ * Spawns `claude --print --output-format stream-json` as a child process
+ * and reads structured JSON events from stdout.
+ */
+async function startAgent(options: { projectPath: string; prompt?: string }) {
+  // Clean up any existing connections (tmux or stream)
+  detachFromPane();
+  stopAgent();
+
+  const sessionId = crypto.randomUUID();
+  sessionStore.create(sessionId, options.projectPath);
+
+  // Build codebase graph from project path
+  try {
+    const graph = await graphBuilder.build(options.projectPath);
+    broadcast({ kind: 'graph.full', graph });
+  } catch (err) {
+    console.error('[agent] Failed to build graph:', err);
+  }
+
+  // Scan agent config
+  try {
+    cachedConfig = await buildAgentConfig(options.projectPath);
+    broadcast({ kind: 'config.full', config: cachedConfig });
+  } catch {
+    // Non-critical
+  }
+
+  // Set up insight engine context
+  if (commanderChat) {
+    commanderChat.setSessionId(sessionId);
+  }
+
+  agentHost = new AgentHost();
+  if (cachedConfig) {
+    agentHost.permissionRules = cachedConfig.permissions;
+  }
+
+  // Wire events — same handleEvent as tmux mode
+  agentHost.on('event', handleEvent);
+
+  agentHost.on('usage', (data: { usage: any; model: string; timestamp: number }) => {
+    tokenTracker.recordUsage(data.usage, data.model, data.timestamp);
+    broadcast({ kind: 'tokens.state', state: tokenTracker.getState() });
+  });
+
+  agentHost.on('result', (result: any) => {
+    console.log(`[agent-host] Completed: ${result.subtype} (session: ${result.sessionId})`);
+    broadcast({ kind: 'agent.status', running: false, claudeSessionId: result.sessionId });
+    applyActivityUpdate({ activity: 'waiting_input', detail: 'Task complete' });
+    updateSessionState({ status: 'complete' });
+  });
+
+  agentHost.on('output', (text: string) => {
+    streamOutput.push(text);
+    broadcast({ kind: 'agent.output', text, append: true });
+  });
+
+  agentHost.on('exit', (code: number | null) => {
+    broadcast({ kind: 'agent.status', running: false });
+    if (code !== 0 && code !== null) {
+      updateSessionState({ status: 'error' });
+    }
+  });
+
+  streamCommandHandler = new StreamCommandHandler(agentHost);
+
+  // Spawn the process
+  agentHost.spawn(sessionId, {
+    projectPath: options.projectPath,
+    prompt: options.prompt,
+  });
+
+  updateSessionState({
+    sessionId,
+    status: 'running',
+    agentCurrentFile: null,
+    taskLabel: options.prompt?.slice(0, 80) || 'Agent',
+    startedAt: Date.now(),
+    eventCount: 0,
+    mode: 'stream',
+    agentActivity: 'working',
+  });
+
+  broadcast({ kind: 'agent.status', running: true });
+
+  return sessionId;
 }
 
 // WebSocket route
@@ -940,6 +1070,13 @@ fastify.register(async function (app) {
     if (lastPaneContent) {
       const paneMsg: ServerMessage = { kind: 'pane.content', content: lastPaneContent };
       socket.send(JSON.stringify(paneMsg));
+    }
+
+    // Send accumulated stream output for stream mode
+    if (streamOutput.length > 0) {
+      const fullText = streamOutput.join('');
+      const outputMsg: ServerMessage = { kind: 'agent.output', text: fullText, append: false };
+      socket.send(JSON.stringify(outputMsg));
     }
 
     // Send stored events for the current session so timeline isn't empty on reconnect
@@ -1039,7 +1176,14 @@ fastify.register(async function (app) {
           }
 
           case 'command':
-            if (commandHandler && agent?.running) {
+            if (sessionState.mode === 'stream' && streamCommandHandler) {
+              streamCommandHandler.handle(msg.command);
+              if (msg.command.type === 'pause' || msg.command.type === 'cancel') {
+                updateSessionState({ status: 'paused' });
+              } else if (msg.command.type === 'resume' || msg.command.type === 'prompt') {
+                updateSessionState({ status: 'running', agentActivity: 'working' });
+              }
+            } else if (commandHandler && agent?.running) {
               commandHandler.handle(msg.command);
               if (msg.command.type === 'pause') {
                 updateSessionState({ status: 'paused' });
@@ -1047,6 +1191,27 @@ fastify.register(async function (app) {
                 updateSessionState({ status: 'running' });
               }
             }
+            break;
+
+          case 'agent.start':
+            try {
+              await startAgent({ projectPath: msg.projectPath, prompt: msg.prompt });
+            } catch (err) {
+              broadcast({ kind: 'error', message: `Failed to start agent: ${err}` });
+            }
+            break;
+
+          case 'agent.resume':
+            if (agentHost) {
+              agentHost.resume(msg.prompt);
+              applyActivityUpdate({ activity: 'working' });
+              updateSessionState({ status: 'running' });
+              broadcast({ kind: 'agent.status', running: true });
+            }
+            break;
+
+          case 'agent.stop':
+            stopAgent();
             break;
 
           case 'sessions.list': {
