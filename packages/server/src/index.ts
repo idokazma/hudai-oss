@@ -901,13 +901,13 @@ function stopAgent() {
  * Spawns `claude --print --output-format stream-json` as a child process
  * and reads structured JSON events from stdout.
  */
-async function startAgent(options: { projectPath: string; prompt?: string }) {
+async function startAgent(options: { projectPath: string; prompt?: string; label: string }) {
   // Clean up any existing connections (tmux or stream)
   detachFromPane();
   stopAgent();
 
   const sessionId = crypto.randomUUID();
-  sessionStore.create(sessionId, options.projectPath, 'stream');
+  sessionStore.create(sessionId, options.projectPath, 'stream', options.label);
 
   // Build codebase graph from project path
   try {
@@ -978,7 +978,7 @@ async function startAgent(options: { projectPath: string; prompt?: string }) {
     sessionId,
     status: 'running',
     agentCurrentFile: null,
-    taskLabel: options.prompt?.slice(0, 80) || 'Agent',
+    taskLabel: options.label,
     startedAt: Date.now(),
     eventCount: 0,
     mode: 'stream',
@@ -1199,7 +1199,7 @@ fastify.register(async function (app) {
 
           case 'agent.start':
             try {
-              await startAgent({ projectPath: msg.projectPath, prompt: msg.prompt });
+              await startAgent({ projectPath: msg.projectPath, prompt: msg.prompt, label: msg.label });
             } catch (err) {
               broadcast({ kind: 'error', message: `Failed to start agent: ${err}` });
             }
