@@ -1,22 +1,93 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { wsClient } from '../../ws/ws-client.js';
 import { usePanesStore } from '../../stores/panes-store.js';
 import { colors, fonts } from '../../theme/tokens.js';
 import { SettingsModal } from '../SettingsModal.js';
+
+interface PathSuggestion {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  isGitRepo?: boolean;
+}
+
+function usePathAutocomplete(value: string) {
+  const [suggestions, setSuggestions] = useState<PathSuggestion[]>([]);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      if (!value.trim()) {
+        setSuggestions([]);
+        return;
+      }
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/fs/complete?path=${encodeURIComponent(value)}`);
+        const data = await res.json();
+        setSuggestions(data.suggestions || []);
+      } catch {
+        setSuggestions([]);
+      }
+      setLoading(false);
+    }, 200);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [value]);
+
+  return { suggestions, loading };
+}
+
+function useRecentProjects() {
+  const [projects, setProjects] = useState<PathSuggestion[]>([]);
+
+  useEffect(() => {
+    fetch('/api/fs/projects')
+      .then((r) => r.json())
+      .then((data) => setProjects(data.projects || []))
+      .catch(() => {});
+  }, []);
+
+  return projects;
+}
+
+const inputStyle = {
+  padding: '10px 12px',
+  background: colors.bg.primary,
+  border: `1px solid ${colors.border.subtle}`,
+  borderRadius: 6,
+  color: colors.text.primary,
+  fontFamily: fonts.mono,
+  fontSize: 13,
+  outline: 'none',
+  width: '100%',
+  boxSizing: 'border-box' as const,
+};
+
+const labelStyle = {
+  color: colors.text.secondary,
+  fontSize: 12,
+  letterSpacing: 0.5,
+};
 
 export function PaneSelector() {
   const panes = usePanesStore((s) => s.panes);
   const [showCreate, setShowCreate] = useState(false);
   const [projectPath, setProjectPath] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [sessionName, setSessionName] = useState('');
+  const [label, setLabel] = useState('');
   const [creating, setCreating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(-1);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  const { suggestions, loading } = usePathAutocomplete(projectPath);
+  const recentProjects = useRecentProjects();
 
   useEffect(() => {
-    // Request pane list on mount
     wsClient.send({ kind: 'panes.list' });
-    // Refresh every 3 seconds
     const interval = setInterval(() => {
       wsClient.send({ kind: 'panes.list' });
     }, 3000);
@@ -31,16 +102,64 @@ export function PaneSelector() {
     wsClient.send({ kind: 'panes.list' });
   };
 
-  const handleCreate = () => {
+  const handleLaunchDirect = () => {
+    if (!projectPath.trim() || !label.trim()) return;
+    setCreating(true);
+    wsClient.send({
+      kind: 'agent.start',
+      projectPath: projectPath.trim(),
+      label: label.trim(),
+      ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
+    });
+  };
+
+  const handleLaunchTmux = () => {
     if (!projectPath.trim()) return;
     setCreating(true);
     wsClient.send({
       kind: 'session.create',
       projectPath: projectPath.trim(),
       ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
-      ...(sessionName.trim() ? { sessionName: sessionName.trim() } : {}),
+      ...(label.trim() ? { sessionName: label.trim() } : {}),
     });
   };
+
+  const selectSuggestion = useCallback((suggestion: PathSuggestion) => {
+    const newPath = suggestion.isDirectory ? suggestion.path + '/' : suggestion.path;
+    setProjectPath(newPath);
+    setShowSuggestions(false);
+    setHighlightIdx(-1);
+  }, []);
+
+  const handlePathKeyDown = (e: React.KeyboardEvent) => {
+    if (!showSuggestions || suggestions.length === 0) {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        setShowSuggestions(true);
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.min(i + 1, suggestions.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Tab' || e.key === 'Enter') {
+      if (highlightIdx >= 0 && highlightIdx < suggestions.length) {
+        e.preventDefault();
+        selectSuggestion(suggestions[highlightIdx]);
+      } else if (suggestions.length === 1) {
+        e.preventDefault();
+        selectSuggestion(suggestions[0]);
+      }
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+    }
+  };
+
+  const canLaunchTmux = !!projectPath.trim() && !creating;
+  const canLaunchDirect = !!projectPath.trim() && !!label.trim() && !creating;
 
   return (
     <div style={{
@@ -50,8 +169,10 @@ export function PaneSelector() {
       justifyContent: 'center',
       height: '100%',
       gap: 24,
+      overflowY: 'auto',
+      padding: '24px 0',
     }}>
-      {/* Create New Agent section */}
+      {/* Launch New Agent */}
       <button
         onClick={() => setShowCreate(!showCreate)}
         style={{
@@ -68,7 +189,7 @@ export function PaneSelector() {
           transition: 'background 0.2s',
         }}
       >
-        {showCreate ? 'Cancel' : 'Create New Agent'}
+        {showCreate ? 'Cancel' : 'Launch New Agent'}
       </button>
 
       {showCreate && (
@@ -83,92 +204,201 @@ export function PaneSelector() {
           borderRadius: 8,
           border: `1px solid ${colors.border.medium}`,
         }}>
-          <label style={{ color: colors.text.secondary, fontSize: 12, letterSpacing: 0.5 }}>
-            PROJECT PATH
-          </label>
+          {/* Recent Projects */}
+          {recentProjects.length > 0 && !projectPath.trim() && (
+            <div style={{ marginBottom: 4 }}>
+              <div style={{ ...labelStyle, marginBottom: 8 }}>RECENT PROJECTS</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {recentProjects.slice(0, 5).map((p) => (
+                  <button
+                    key={p.path}
+                    onClick={() => setProjectPath(p.path)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 10px',
+                      background: 'transparent',
+                      border: `1px solid ${colors.border.subtle}`,
+                      borderRadius: 6,
+                      color: colors.text.primary,
+                      fontFamily: fonts.mono,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseOver={(e) => { e.currentTarget.style.background = colors.surface.hover; }}
+                    onMouseOut={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <span style={{ color: p.isGitRepo ? colors.status.successLight : colors.text.muted, flexShrink: 0 }}>
+                      {p.isGitRepo ? 'git' : 'dir'}
+                    </span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.path}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Project Path with autocomplete */}
+          <label style={labelStyle}>PROJECT FOLDER</label>
+          <div style={{ position: 'relative' }}>
+            <input
+              type="text"
+              placeholder="Start typing a path or use Tab to autocomplete..."
+              value={projectPath}
+              onChange={(e) => {
+                setProjectPath(e.target.value);
+                setShowSuggestions(true);
+                setHighlightIdx(-1);
+              }}
+              onFocus={() => setShowSuggestions(true)}
+              onBlur={() => {
+                // Delay to allow clicking a suggestion
+                setTimeout(() => setShowSuggestions(false), 200);
+              }}
+              onKeyDown={handlePathKeyDown}
+              style={{
+                ...inputStyle,
+                borderColor: showSuggestions && suggestions.length > 0 ? colors.accent.blue : colors.border.subtle,
+              }}
+            />
+            {loading && (
+              <span style={{
+                position: 'absolute',
+                right: 10,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: colors.text.muted,
+                fontSize: 11,
+              }}>
+                ...
+              </span>
+            )}
+            {showSuggestions && suggestions.length > 0 && (
+              <div
+                ref={suggestionsRef}
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  left: 0,
+                  right: 0,
+                  maxHeight: 200,
+                  overflowY: 'auto',
+                  background: colors.bg.primary,
+                  border: `1px solid ${colors.border.medium}`,
+                  borderRadius: '0 0 6px 6px',
+                  zIndex: 10,
+                }}
+              >
+                {suggestions.map((s, i) => (
+                  <button
+                    key={s.path}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectSuggestion(s);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      width: '100%',
+                      padding: '8px 12px',
+                      background: i === highlightIdx ? colors.surface.hover : 'transparent',
+                      border: 'none',
+                      color: colors.text.primary,
+                      fontFamily: fonts.mono,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <span style={{
+                      color: s.isGitRepo ? colors.status.successLight : colors.text.muted,
+                      fontSize: 11,
+                      flexShrink: 0,
+                      width: 24,
+                    }}>
+                      {s.isGitRepo ? 'git' : 'dir'}
+                    </span>
+                    <span>{s.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Label (required for headless, optional for tmux) */}
+          <label style={labelStyle}>SESSION LABEL <span style={{ color: colors.text.muted }}>(required for headless)</span></label>
           <input
             type="text"
-            placeholder="/home/user/my-project"
-            value={projectPath}
-            onChange={(e) => setProjectPath(e.target.value)}
-            style={{
-              padding: '10px 12px',
-              background: colors.bg.primary,
-              border: `1px solid ${colors.border.subtle}`,
-              borderRadius: 6,
-              color: colors.text.primary,
-              fontFamily: fonts.mono,
-              fontSize: 13,
-              outline: 'none',
-            }}
+            placeholder="e.g. fix-auth-bug, add-search-feature"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            style={inputStyle}
             onFocus={(e) => { e.currentTarget.style.borderColor = colors.accent.blue; }}
             onBlur={(e) => { e.currentTarget.style.borderColor = colors.border.subtle; }}
           />
 
-          <label style={{ color: colors.text.secondary, fontSize: 12, letterSpacing: 0.5 }}>
-            SESSION NAME (optional)
-          </label>
-          <input
-            type="text"
-            placeholder="e.g. my-feature-agent"
-            value={sessionName}
-            onChange={(e) => setSessionName(e.target.value)}
-            style={{
-              padding: '10px 12px',
-              background: colors.bg.primary,
-              border: `1px solid ${colors.border.subtle}`,
-              borderRadius: 6,
-              color: colors.text.primary,
-              fontFamily: fonts.mono,
-              fontSize: 13,
-              outline: 'none',
-            }}
-            onFocus={(e) => { e.currentTarget.style.borderColor = colors.accent.blue; }}
-            onBlur={(e) => { e.currentTarget.style.borderColor = colors.border.subtle; }}
-          />
-
-          <label style={{ color: colors.text.secondary, fontSize: 12, letterSpacing: 0.5 }}>
-            INITIAL PROMPT (optional)
-          </label>
+          {/* Initial Prompt */}
+          <label style={labelStyle}>INITIAL PROMPT (optional)</label>
           <input
             type="text"
             placeholder="e.g. Fix the failing tests in src/utils"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
-            style={{
-              padding: '10px 12px',
-              background: colors.bg.primary,
-              border: `1px solid ${colors.border.subtle}`,
-              borderRadius: 6,
-              color: colors.text.primary,
-              fontFamily: fonts.mono,
-              fontSize: 13,
-              outline: 'none',
-            }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && canLaunchTmux) handleLaunchTmux(); }}
+            style={inputStyle}
             onFocus={(e) => { e.currentTarget.style.borderColor = colors.accent.blue; }}
             onBlur={(e) => { e.currentTarget.style.borderColor = colors.border.subtle; }}
           />
 
-          <button
-            onClick={handleCreate}
-            disabled={!projectPath.trim() || creating}
-            style={{
-              padding: '10px 16px',
-              background: !projectPath.trim() || creating ? colors.surface.hover : colors.accent.blue,
-              border: 'none',
-              borderRadius: 6,
-              color: colors.text.primary,
-              fontFamily: fonts.body,
-              fontSize: 13,
-              cursor: !projectPath.trim() || creating ? 'not-allowed' : 'pointer',
-              letterSpacing: 0.5,
-              opacity: !projectPath.trim() || creating ? 0.5 : 1,
-              transition: 'opacity 0.2s, background 0.2s',
-            }}
-          >
-            {creating ? 'Starting Claude...' : 'Launch Agent'}
-          </button>
+          {/* Launch buttons */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <button
+              onClick={handleLaunchTmux}
+              disabled={!canLaunchTmux}
+              style={{
+                flex: 1,
+                padding: '10px 16px',
+                background: canLaunchTmux ? colors.accent.blue : colors.surface.hover,
+                border: 'none',
+                borderRadius: 6,
+                color: colors.text.primary,
+                fontFamily: fonts.body,
+                fontSize: 13,
+                cursor: canLaunchTmux ? 'pointer' : 'not-allowed',
+                letterSpacing: 0.5,
+                opacity: canLaunchTmux ? 1 : 0.5,
+                transition: 'opacity 0.2s, background 0.2s',
+              }}
+            >
+              {creating ? 'Starting...' : 'Launch Agent'}
+            </button>
+            <button
+              onClick={handleLaunchDirect}
+              disabled={!canLaunchDirect}
+              title="Headless mode — no terminal UI, structured output only (requires label)"
+              style={{
+                padding: '10px 16px',
+                background: 'transparent',
+                border: `1px solid ${colors.border.subtle}`,
+                borderRadius: 6,
+                color: colors.text.muted,
+                fontFamily: fonts.body,
+                fontSize: 13,
+                cursor: canLaunchDirect ? 'pointer' : 'not-allowed',
+                letterSpacing: 0.5,
+                opacity: canLaunchDirect ? 1 : 0.5,
+                transition: 'opacity 0.2s',
+              }}
+            >
+              Headless
+            </button>
+          </div>
         </div>
       )}
 
@@ -281,7 +511,7 @@ export function PaneSelector() {
             gap: 6,
           }}
         >
-          ⚙ Settings
+          Settings
         </button>
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

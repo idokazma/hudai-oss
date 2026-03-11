@@ -1,14 +1,65 @@
 import { useRef, useEffect, useState } from 'react';
 import { useSessionStore } from '../stores/session-store.js';
 import { usePreviewStore } from '../stores/preview-store.js';
+import { usePaneContentStore } from '../stores/pane-content-store.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import { colors } from '../theme/tokens.js';
+import { colors, fonts } from '../theme/tokens.js';
+import { CommandOverlay } from './Steering/CommandOverlay.js';
+
+/** Stream mode terminal view — renders text blocks from agent.output messages */
+function StreamTerminal() {
+  const streamOutput = usePaneContentStore((s) => s.streamOutput);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Auto-scroll to bottom on new output
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [streamOutput]);
+
+  if (!streamOutput) {
+    return (
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: colors.text.muted,
+        fontSize: 13,
+      }}>
+        Waiting for agent output...
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={scrollRef}
+      style={{
+        flex: 1,
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        padding: '12px 16px',
+        fontFamily: fonts.mono,
+        fontSize: 13,
+        lineHeight: 1.6,
+        color: colors.text.primary,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      {streamOutput}
+    </div>
+  );
+}
 
 export function PanePreview() {
   const tmuxTarget = useSessionStore((s) => s.session.tmuxTarget);
+  const sessionMode = useSessionStore((s) => s.session.mode);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const clipRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -192,7 +243,9 @@ export function PanePreview() {
       overflow: 'hidden',
       background: colors.terminal.bg,
     }}>
-      {!tmuxTarget && (
+      {sessionMode === 'stream' ? (
+        <StreamTerminal />
+      ) : !tmuxTarget ? (
         <div style={{
           flex: 1,
           display: 'flex',
@@ -203,25 +256,27 @@ export function PanePreview() {
         }}>
           No session attached
         </div>
-      )}
-      <div
-        ref={wrapperRef}
-        style={{
-          flex: 1,
-          display: tmuxTarget ? 'flex' : 'none',
-          flexDirection: 'column',
-          justifyContent: 'flex-start',
-          overflowY: 'auto',
-          overflowX: 'hidden',
-        }}
-      >
+      ) : (
         <div
-          ref={clipRef}
-          style={{ flexShrink: 0, overflow: 'hidden' }}
+          ref={wrapperRef}
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'flex-start',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+          }}
         >
-          <div ref={containerRef} />
+          <div
+            ref={clipRef}
+            style={{ flexShrink: 0, overflow: 'hidden' }}
+          >
+            <div ref={containerRef} />
+          </div>
         </div>
-      </div>
+      )}
+      {(tmuxTarget || sessionMode === 'stream') && <CommandOverlay />}
     </div>
   );
 }
