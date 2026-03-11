@@ -142,6 +142,10 @@ export function useWebSocket() {
               usePlanStore.getState().setSessionId(msg.state.sessionId);
             }
             setSession(msg.state);
+            // Set pane content mode based on session mode
+            if (msg.state.mode) {
+              usePaneContentStore.getState().setMode(msg.state.mode);
+            }
             // Detect agent activity transitions → update activity tracking + push chat messages
             handleActivityChange(msg.state.agentActivity, msg.state.agentActivityDetail, msg.state.agentActivityOptions);
             handleActivityChat(msg.state.agentActivity, msg.state.agentActivityDetail, msg.state.agentActivityOptions, msg.state.sessionId);
@@ -208,6 +212,19 @@ export function useWebSocket() {
           if (replayMode === 'live') {
             setPaneContent(msg.content, msg.caret);
           }
+          break;
+        case 'agent.output':
+          if (replayMode === 'live') {
+            const paneStore = usePaneContentStore.getState();
+            if (msg.append) {
+              paneStore.appendStreamOutput(msg.text);
+            } else {
+              paneStore.setStreamOutput(msg.text);
+            }
+          }
+          break;
+        case 'agent.status':
+          // Could extend to show in UI — for now just log
           break;
         case 'graph.full':
           setGraph(msg.graph);

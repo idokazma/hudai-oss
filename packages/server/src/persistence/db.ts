@@ -41,6 +41,17 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
   `);
 
+  // Migration: add claude_session_id and mode columns to sessions (safe to re-run)
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN claude_session_id TEXT`);
+  } catch { /* column already exists */ }
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'tmux'`);
+  } catch { /* column already exists */ }
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN label TEXT`);
+  } catch { /* column already exists */ }
+
   return db;
 }
 

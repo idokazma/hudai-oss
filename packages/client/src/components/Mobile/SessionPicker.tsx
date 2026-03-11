@@ -7,6 +7,7 @@ export function SessionPicker() {
   const panes = usePanesStore((s) => s.panes);
   const [showCreate, setShowCreate] = useState(false);
   const [projectPath, setProjectPath] = useState('');
+  const [label, setLabel] = useState('');
   const [prompt, setPrompt] = useState('');
   const [creating, setCreating] = useState(false);
 
@@ -21,11 +22,12 @@ export function SessionPicker() {
   };
 
   const handleCreate = () => {
-    if (!projectPath.trim()) return;
+    if (!projectPath.trim() || !label.trim()) return;
     setCreating(true);
     wsClient.send({
-      kind: 'session.create',
+      kind: 'agent.start',
       projectPath: projectPath.trim(),
+      label: label.trim(),
       ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
     });
   };
@@ -182,6 +184,23 @@ export function SessionPicker() {
           />
           <input
             type="text"
+            placeholder="Session label (required)"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            style={{
+              height: 44,
+              padding: '0 14px',
+              background: colors.surface.dimmer,
+              border: `1px solid ${colors.border.subtle}`,
+              borderRadius: 8,
+              color: colors.text.primary,
+              fontSize: 14,
+              fontFamily: fonts.mono,
+              outline: 'none',
+            }}
+          />
+          <input
+            type="text"
             placeholder="Initial prompt (optional)"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -217,19 +236,19 @@ export function SessionPicker() {
             </button>
             <button
               onClick={handleCreate}
-              disabled={!projectPath.trim() || creating}
+              disabled={!projectPath.trim() || !label.trim() || creating}
               style={{
                 flex: 1,
                 height: 44,
                 borderRadius: 8,
                 border: 'none',
-                background: projectPath.trim() && !creating ? colors.accent.primary : colors.surface.dimmer,
+                background: projectPath.trim() && label.trim() && !creating ? colors.accent.primary : colors.surface.dimmer,
                 color: colors.text.white,
                 fontSize: 14,
                 fontFamily: fonts.body,
                 fontWeight: 600,
-                cursor: projectPath.trim() && !creating ? 'pointer' : 'default',
-                opacity: projectPath.trim() && !creating ? 1 : 0.4,
+                cursor: projectPath.trim() && label.trim() && !creating ? 'pointer' : 'default',
+                opacity: projectPath.trim() && label.trim() && !creating ? 1 : 0.4,
               }}
             >
               {creating ? 'Starting...' : 'Launch'}
