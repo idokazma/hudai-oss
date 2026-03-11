@@ -63,30 +63,44 @@ export interface SessionSummary {
   endedAt: number | null;
   status: string;
   eventCount: number;
+  /** Claude Code session ID for --resume (stream mode only) */
+  claudeSessionId?: string;
+  /** How the session was created */
+  mode?: 'tmux' | 'stream';
+  /** User-provided session name */
+  label?: string;
 }
 
 export class SessionStore {
   private insertStmt;
   private updateStatusStmt;
+  private updateClaudeSessionStmt;
   private listStmt;
+  private getByIdStmt;
 
   constructor() {
     const db = getDb();
     this.insertStmt = db.prepare(
-      'INSERT INTO sessions (id, project_path, started_at, status) VALUES (?, ?, ?, ?)'
+      'INSERT INTO sessions (id, project_path, started_at, status, mode, label) VALUES (?, ?, ?, ?, ?, ?)'
     );
     this.updateStatusStmt = db.prepare(
       'UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?'
     );
+    this.updateClaudeSessionStmt = db.prepare(
+      'UPDATE sessions SET claude_session_id = ? WHERE id = ?'
+    );
     this.listStmt = db.prepare(
-      `SELECT s.id, s.project_path, s.started_at, s.ended_at, s.status, COUNT(e.id) as event_count
+      `SELECT s.id, s.project_path, s.started_at, s.ended_at, s.status, s.claude_session_id, s.mode, s.label, COUNT(e.id) as event_count
        FROM sessions s LEFT JOIN events e ON e.session_id = s.id
        GROUP BY s.id ORDER BY s.started_at DESC`
     );
+    this.getByIdStmt = db.prepare(
+      'SELECT * FROM sessions WHERE id = ?'
+    );
   }
 
-  create(id: string, projectPath: string) {
-    this.insertStmt.run(id, projectPath, Date.now(), 'running');
+  create(id: string, projectPath: string, mode: 'tmux' | 'stream' = 'tmux', label?: string) {
+    this.insertStmt.run(id, projectPath, Date.now(), 'running', mode, label || null);
   }
 
   complete(id: string) {
@@ -95,6 +109,17 @@ export class SessionStore {
 
   error(id: string) {
     this.updateStatusStmt.run('error', Date.now(), id);
+  }
+
+  /** Store Claude Code's session ID for --resume support */
+  setClaudeSessionId(id: string, claudeSessionId: string) {
+    this.updateClaudeSessionStmt.run(claudeSessionId, id);
+  }
+
+  /** Get Claude Code's session ID for resuming a past session */
+  getClaudeSessionId(id: string): string | null {
+    const row = this.getByIdStmt.get(id) as any;
+    return row?.claude_session_id || null;
   }
 
   list(): SessionSummary[] {
@@ -106,6 +131,9 @@ export class SessionStore {
       endedAt: r.ended_at,
       status: r.status,
       eventCount: r.event_count,
+      claudeSessionId: r.claude_session_id || undefined,
+      mode: r.mode || 'tmux',
+      label: r.label || undefined,
     }));
   }
 }
