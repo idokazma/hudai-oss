@@ -1,15 +1,67 @@
 import { useRef, useEffect, useState } from 'react';
 import { useSessionStore } from '../stores/session-store.js';
 import { usePreviewStore } from '../stores/preview-store.js';
+import { usePaneContentStore } from '../stores/pane-content-store.js';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import { colors } from '../theme/tokens.js';
+import { colors, fonts } from '../theme/tokens.js';
+import { CommandOverlay } from './Steering/CommandOverlay.js';
+
+/** Stream mode terminal view — renders text blocks from agent.output messages */
+function StreamTerminal() {
+  const streamOutput = usePaneContentStore((s) => s.streamOutput);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Auto-scroll to bottom on new output
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [streamOutput]);
+
+  if (!streamOutput) {
+    return (
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: colors.text.muted,
+        fontSize: 10,
+      }}>
+        Waiting for agent output...
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={scrollRef}
+      style={{
+        flex: 1,
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        padding: '12px 16px',
+        fontFamily: fonts.mono,
+        fontSize: 10,
+        lineHeight: 1.6,
+        color: colors.text.primary,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      {streamOutput}
+    </div>
+  );
+}
 
 export function PanePreview() {
   const tmuxTarget = useSessionStore((s) => s.session.tmuxTarget);
+  const sessionMode = useSessionStore((s) => s.session.mode);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const clipRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -23,7 +75,7 @@ export function PanePreview() {
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'block',
-      fontSize: 13,
+      fontSize: 10,
       scrollback: 5000,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       theme: {
@@ -57,7 +109,8 @@ export function PanePreview() {
     term.loadAddon(fit);
     term.loadAddon(webLinks);
     term.open(containerRef.current);
-    fit.fit();
+    // Delay initial fit to ensure container has been laid out by the grid
+    requestAnimationFrame(() => fit.fit());
 
     // Override wheel events so they always scroll the xterm.js buffer
     // instead of being forwarded as mouse reports to tmux/Claude Code
@@ -146,17 +199,32 @@ export function PanePreview() {
     });
     resizeObserver.observe(containerRef.current);
 
-    // Forward wheel events from the clipped wrapper area to xterm
-    const wrapper = wrapperRef.current;
-    const onWrapperWheel = (ev: WheelEvent) => {
-      ev.preventDefault();
-      const lines = ev.deltaY > 0 ? 3 : -3;
-      term.scrollLines(lines);
+    // Trim trailing empty lines — clip via a wrapper so xterm's own sizing is unaffected
+    const trimEmpty = () => {
+      if (!clipRef.current || !containerRef.current) return;
+      const buf = term.buffer.active;
+      let lastNonEmpty = 0;
+      for (let i = term.rows - 1; i >= 0; i--) {
+        const line = buf.getLine(buf.baseY + i);
+        if (line && line.translateToString(true).trim().length > 0) {
+          lastNonEmpty = i + 1;
+          break;
+        }
+      }
+      const visibleRows = Math.max(lastNonEmpty, buf.cursorY + 1);
+      if (visibleRows >= term.rows) {
+        clipRef.current.style.height = '';
+        return;
+      }
+      const screen = containerRef.current.querySelector('.xterm-screen') as HTMLElement;
+      if (!screen) return;
+      const cellHeight = screen.clientHeight / term.rows;
+      clipRef.current.style.height = `${Math.ceil(visibleRows * cellHeight)}px`;
     };
-    wrapper?.addEventListener('wheel', onWrapperWheel, { passive: false });
+    const renderDisposable = term.onRender(() => trimEmpty());
 
     return () => {
-      wrapper?.removeEventListener('wheel', onWrapperWheel);
+      renderDisposable.dispose();
       resizeObserver.disconnect();
       ws.close();
       term.dispose();
@@ -175,33 +243,40 @@ export function PanePreview() {
       overflow: 'hidden',
       background: colors.terminal.bg,
     }}>
-      {!tmuxTarget && (
+      {sessionMode === 'stream' ? (
+        <StreamTerminal />
+      ) : !tmuxTarget ? (
         <div style={{
           flex: 1,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           color: colors.text.muted,
-          fontSize: 13,
+          fontSize: 10,
         }}>
           No session attached
         </div>
-      )}
-      <div
-        ref={wrapperRef}
-        style={{
-          flex: 1,
-          display: tmuxTarget ? 'flex' : 'none',
-          flexDirection: 'column',
-          justifyContent: 'flex-end',
-          overflow: 'hidden',
-        }}
-      >
+      ) : (
         <div
-          ref={containerRef}
-          style={{ flexShrink: 0 }}
-        />
-      </div>
+          ref={wrapperRef}
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'flex-start',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+          }}
+        >
+          <div
+            ref={clipRef}
+            style={{ flexShrink: 0, overflow: 'hidden' }}
+          >
+            <div ref={containerRef} />
+          </div>
+        </div>
+      )}
+      {(tmuxTarget || sessionMode === 'stream') && <CommandOverlay />}
     </div>
   );
 }

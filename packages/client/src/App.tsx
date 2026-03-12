@@ -1,6 +1,8 @@
-import { Component, type ReactNode } from 'react';
+import { Component, type ReactNode, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { HudLayout } from './components/HudLayout.js';
+import { HudShell } from './components/HudShell.js';
+import { MobileShell } from './components/Mobile/MobileShell.js';
 import { colors } from './theme/tokens.js';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -26,11 +28,25 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+function useLayoutParam(): 'density' | 'legacy' | 'mobile' {
+  return useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const layout = params.get('layout');
+    if (layout === 'mobile') return 'mobile';
+    if (layout === 'legacy' || layout === 'classic') return 'legacy';
+    // Auto-detect mobile devices
+    if (window.innerWidth < 768 && 'ontouchstart' in window) return 'mobile';
+    return 'density';
+  }, []);
+}
+
 export default function App() {
   useWebSocket();
+  const layout = useLayoutParam();
+
   return (
     <ErrorBoundary>
-      <HudLayout />
+      {layout === 'mobile' ? <MobileShell /> : layout === 'legacy' ? <HudLayout /> : <HudShell />}
     </ErrorBoundary>
   );
 }

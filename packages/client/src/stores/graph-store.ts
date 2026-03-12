@@ -82,6 +82,9 @@ interface GraphStoreState {
   setZoomLevel: (zoom: number) => void;
   setSemanticZoom: (tier: SemanticZoomTier) => void;
   addActivity: (event: AVPEvent) => void;
+  /** Node ID to temporarily highlight on the map (e.g. from journey hover) */
+  highlightNodeId: string | null;
+  setHighlightNode: (nodeId: string | null) => void;
 }
 
 function eventToActivity(event: AVPEvent): ActivityNode | null {
@@ -191,6 +194,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   semanticZoom: 'file' as SemanticZoomTier,
   pipelineLayer: null,
   pipelineAnalyzing: false,
+  highlightNodeId: null,
+  setHighlightNode: (nodeId) => set({ highlightNodeId: nodeId }),
 
   setPipelineLayer: (layer) => set({ pipelineLayer: layer, pipelineAnalyzing: false }),
   setPipelineAnalyzing: (analyzing) => set({ pipelineAnalyzing: analyzing }),

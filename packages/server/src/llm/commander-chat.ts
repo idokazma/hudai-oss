@@ -370,7 +370,7 @@ ${conversationLines}
 
 Respond to the user's latest message as the Advisor. Reply with ONLY your response text.`;
 
-    const result = await this.gemini.ask(prompt);
+    const result = await this.gemini.ask(prompt, 'Advisor reply');
 
     // Stop typing
     this.pendingMessages.push({ kind: 'chat.typing', typing: false });
@@ -443,7 +443,7 @@ ${context}
 
 ${this.getProactivePrompt()}`;
 
-    const result = await this.gemini.ask(prompt);
+    const result = await this.gemini.ask(prompt, 'Proactive insight');
     const text = result?.trim().slice(0, 300) || context.slice(0, 300);
 
     const msg: ChatMessage = {

@@ -496,16 +496,18 @@ export function CodebaseMap() {
         </div>
       )}
 
-      {/* Journey overlay */}
+      {/* Journey overlay — shown as a side panel on top of the session-filtered map */}
       {mapMode === 'journey' && (
         <div style={{
           position: 'absolute',
           top: 0,
           left: 0,
-          right: 0,
+          width: 280,
           bottom: 0,
           zIndex: 5,
           overflow: 'hidden',
+          background: colors.bg.panel,
+          borderRight: `1px solid ${colors.border.subtle}`,
         }}>
           <JourneyPanel />
         </div>
@@ -556,8 +558,7 @@ export function CodebaseMap() {
           options={[
             { value: 'pipeline' as MapMode, label: 'Pipeline' },
             { value: 'full' as MapMode, label: 'Full Map' },
-            { value: 'session' as MapMode, label: `Session${sessionFileCount > 0 ? ` (${sessionFileCount})` : ''}` },
-            { value: 'journey' as MapMode, label: 'Journey' },
+            { value: 'journey' as MapMode, label: `Journey${sessionFileCount > 0 ? ` (${sessionFileCount})` : ''}` },
             { value: 'architecture' as MapMode, label: 'C4' },
             { value: 'library' as MapMode, label: 'Library' },
           ]}
@@ -573,7 +574,7 @@ export function CodebaseMap() {
         />
 
         {/* Size mode — only visible in map modes */}
-        {(mapMode === 'full' || mapMode === 'session' || mapMode === 'architecture') && (
+        {(mapMode === 'full' || mapMode === 'session' || mapMode === 'journey' || mapMode === 'architecture') && (
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
             <button
               onClick={() => setNodeSizeMode('filesize')}

@@ -260,7 +260,7 @@ Active directories: ${dirs}
 
 Reply with ONLY the sentence, no quotes or punctuation.`;
 
-    const result = await this.gemini.ask(prompt);
+    const result = await this.gemini.ask(prompt, 'Intent detection');
     if (!result) return;
 
     const text = result.trim().replace(/^["']|["']$/g, '').slice(0, 80);
@@ -359,7 +359,7 @@ ${phaseLines.length > 0 ? `Work phases (chronological):\n${phaseLines.join('\n')
 ${contextPreview ? `\n--- FULL SESSION CONTEXT ---\n${contextPreview}` : ''}
 Reply with ONLY the sections above.`;
 
-    const result = await this.gemini.ask(prompt);
+    const result = await this.gemini.ask(prompt, 'Session summary');
     if (!result) return null;
 
     const timestamps = events.map(e => e.timestamp);
@@ -453,29 +453,9 @@ Reply with ONLY the sections above.`;
     triggeredBy: string,
     minVerbosity?: AdvisorVerbosity,
   ) {
-    // Route to CommanderChat if callback is set — this is the primary path.
-    // Don't also emit insight.notification to avoid duplicate Telegram messages.
+    // Route to CommanderChat — this is the only path.
     if (this.onNotification) {
       this.onNotification(context, severity, triggeredBy, minVerbosity);
-      return;
     }
-
-    // Fallback: no CommanderChat, emit raw insight.notification
-    const prompt = `You are an AI coding agent monitor. Write a single alert message (max 20 words) for this situation:
-${context}
-
-Reply with ONLY the alert message.`;
-
-    const result = await this.gemini.ask(prompt);
-    const text = result?.trim().slice(0, 120) || context.slice(0, 120);
-
-    const notification: InsightNotification = {
-      id: `insight-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      text,
-      severity,
-      triggeredBy,
-      timestamp: Date.now(),
-    };
-    this.pendingMessages.push({ kind: 'insight.notification', notification });
   }
 }

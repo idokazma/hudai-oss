@@ -15,7 +15,7 @@ export class OverviewBuilder {
     const packageJson = await this.readPackageJson(rootDir);
 
     const prompt = buildOverviewPrompt(modules, packageJson, directoryTree);
-    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.');
+    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.', 'Library overview');
 
     const parsed = JSON.parse(this.stripCodeFences(responseText));
 
@@ -45,7 +45,7 @@ export class OverviewBuilder {
       directoryTree,
     );
 
-    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.');
+    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.', 'Library update');
 
     const parsed = JSON.parse(this.stripCodeFences(responseText));
     const llmOverview = this.parseOverview(parsed, packageJson);
