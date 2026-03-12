@@ -2072,34 +2072,52 @@ fastify.addHook('onClose', async () => {
   }
 });
 
-// Start server
-const port = WS_PORT;
-try {
-  await fastify.listen({ port, host: '0.0.0.0' });
-  console.log(`Hudai server running on http://localhost:${port}`);
+// Start server — try a range of ports if the default is in use
+const PORT_CANDIDATES = [WS_PORT, WS_PORT + 1, WS_PORT + 2, WS_PORT + 3];
 
-  // Load project-level data at startup — these don't need a session attached.
-  // Build codebase graph + load pipeline cache from server's working directory.
-  const serverCwd = process.cwd();
-  (async () => {
-    try {
-      const graph = await graphBuilder.build(serverCwd);
-      broadcast({ kind: 'graph.full', graph });
-      console.log(`[startup] Built codebase graph: ${graph.nodes.length} nodes`);
-    } catch (err) {
-      console.error('[startup] Graph build failed:', err);
-    }
-    try {
-      const cache = await loadCache(serverCwd);
-      if (cache && cache.pipelines.length > 0 && !cachedPipelineLayer) {
-        cachedPipelineLayer = { pipelines: cache.pipelines };
-        broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
-        console.log(`[startup] Loaded ${cache.pipelines.length} pipelines from cache`);
+let started = false;
+for (const port of PORT_CANDIDATES) {
+  try {
+    await fastify.listen({ port, host: '0.0.0.0' });
+    console.log(`Hudai server running on http://localhost:${port}`);
+    started = true;
+
+    // Load project-level data at startup
+    const serverCwd = process.cwd();
+    (async () => {
+      try {
+        const graph = await graphBuilder.build(serverCwd);
+        broadcast({ kind: 'graph.full', graph });
+        console.log(`[startup] Built codebase graph: ${graph.nodes.length} nodes`);
+      } catch (err) {
+        console.error('[startup] Graph build failed:', err);
       }
-    } catch { /* no cache — that's fine */ }
-  })();
-} catch (err) {
-  fastify.log.error(err);
+      try {
+        const cache = await loadCache(serverCwd);
+        if (cache && cache.pipelines.length > 0 && !cachedPipelineLayer) {
+          cachedPipelineLayer = { pipelines: cache.pipelines };
+          broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
+          console.log(`[startup] Loaded ${cache.pipelines.length} pipelines from cache`);
+        }
+      } catch { /* no cache — that's fine */ }
+    })();
+    break;
+  } catch (err: any) {
+    if (err?.code === 'EADDRINUSE') {
+      console.warn(`Port ${port} is in use, trying next...`);
+      continue;
+    }
+    fastify.log.error(err);
+    process.exit(1);
+  }
+}
+
+if (!started) {
+  console.error(
+    `\nFailed to start: ports ${PORT_CANDIDATES.join(', ')} are all in use.\n` +
+    `Kill the process using one of these ports and try again:\n` +
+    `  lsof -ti:${WS_PORT} | xargs kill\n`
+  );
   process.exit(1);
 }
 
