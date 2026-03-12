@@ -1889,18 +1889,6 @@ fastify.register(async function (app) {
 // Health check
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 
-// ── Pipeline PDF export ─────────────────────────────────────────────
-import { generatePipelinePdf } from './pipeline/pipeline-pdf.js';
-
-fastify.get('/api/pipeline/export', async (_request, reply) => {
-  const layer = cachedPipelineLayer ?? getDemoPipelines();
-  const projectName = sessionState.agentCurrentFile?.split('/')[0] || 'Hudai';
-  const pdf = await generatePipelinePdf(layer, projectName);
-  reply
-    .header('Content-Type', 'application/pdf')
-    .header('Content-Disposition', `attachment; filename="pipeline-audit-${Date.now()}.pdf"`)
-    .send(pdf);
-});
 
 // ── Filesystem path completion ──────────────────────────────────────
 import { completePath, scanRecentProjects } from './fs/path-completer.js';
