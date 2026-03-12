@@ -20,6 +20,7 @@
     "build:shared": "npm run build -w @hudai/shared",
     "dev:telegram": "npm run dev -w @hudai/telegram-bot",
     "build:bundle": "npm run build -w @hudai/shared && npm run build -w @hudai/server && npm run build -w @hudai/client && mkdir -p packages/server/public && cp -r packages/client/dist/* packages/server/public/",
+    "start": "npm run build:bundle && node packages/server/bin/hudai.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
