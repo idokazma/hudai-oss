@@ -58,7 +58,7 @@ export function useForceGraph(
 
   // Track structural identity of the graph (node count + edge count)
   // Only rebuild force layout when structure actually changes
-  const sessionFilterKey = mapMode === 'session' ? sessionTouchedFiles.size : 0;
+  const sessionFilterKey = (mapMode === 'session' || mapMode === 'journey') ? sessionTouchedFiles.size : 0;
   const isArchMode = mapMode === 'architecture';
   const archContainerCount = architecture?.containers.length ?? 0;
   const structureKey = useMemo(() => {
@@ -69,7 +69,7 @@ export function useForceGraph(
   // Compute display graph — only recalculates on structural changes
   const displayGraph = useMemo(() => {
     if (!graph) return null;
-    const sessionFilter = mapMode === 'session' ? sessionTouchedFiles : undefined;
+    const sessionFilter = (mapMode === 'session' || mapMode === 'journey') ? sessionTouchedFiles : undefined;
     return buildDisplayGraph(
       graph.nodes,
       graph.edges,
@@ -406,6 +406,15 @@ export function useForceGraph(
     }
     rendererRef.current.setFailingFiles(visibleFailing);
   }, [failingFiles, graph]);
+
+  // External highlight (e.g. journey hover) — show focus ring
+  const highlightNodeId = useGraphStore((s) => s.highlightNodeId);
+  useEffect(() => {
+    if (!rendererRef.current) return;
+    if (highlightNodeId) {
+      rendererRef.current.showFocusRing(highlightNodeId);
+    }
+  }, [highlightNodeId]);
 
   // Sync activity nodes to renderer — stable positioning
   const activityNodes = useGraphStore((s) => s.activityNodes);

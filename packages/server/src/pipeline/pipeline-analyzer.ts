@@ -47,7 +47,7 @@ export class PipelineAnalyzer {
     const prompt = await gatherPipelineContext(rootDir, graph);
 
     console.log('[pipeline] Calling LLM for pipeline analysis...');
-    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.');
+    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.', 'Pipeline analysis');
     const pipelines = this.parseAndValidate(responseText, graph);
 
     // Save cache with ALL graph file IDs (not just referenced files)
@@ -70,7 +70,7 @@ export class PipelineAnalyzer {
     const prompt = await gatherDeltaPipelineContext(rootDir, graph, existingPipelines, staleness);
 
     console.log('[pipeline] Calling LLM (incremental)...');
-    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.');
+    const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.', 'Pipeline update');
     const llmPipelines = this.parseAndValidate(responseText, graph);
 
     // Merge: use cached pipelines as base, apply LLM changes only where needed

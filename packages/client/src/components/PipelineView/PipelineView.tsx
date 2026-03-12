@@ -155,8 +155,8 @@ export function PipelineView() {
   // Compute translate extent to clamp panning near the blocks
   const translateExtent = useMemo((): [[number, number], [number, number]] => {
     if (liveNodes.length === 0) return [[-Infinity, -Infinity], [Infinity, Infinity]];
-    const padX = 300;
-    const padY = 80;
+    const padX = 800;
+    const padY = 300;
     const xs = liveNodes.map((n) => n.position.x);
     const ys = liveNodes.map((n) => n.position.y);
     return [
@@ -586,11 +586,10 @@ export function PipelineView() {
         <div
           style={{
             position: 'absolute',
-            bottom: 8,
-            left: '50%',
-            transform: 'translateX(-50%)',
+            top: 8,
+            right: 8,
             zIndex: 10,
-            maxWidth: 400,
+            maxWidth: 300,
             padding: '6px 10px',
             background: colors.bg.panel,
             border: `1px solid ${colors.border.subtle}`,
