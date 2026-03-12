@@ -171,9 +171,12 @@ export class AgentProcess extends EventEmitter {
 
   private lastRawLineCount = 0;
 
+  private captureFailCount = 0;
+
   private captureLines(): string[] {
     try {
       const raw = tmuxExec(`capture-pane -t "${this.tmuxTarget}" -p -e -S -500`);
+      this.captureFailCount = 0;
       // Normalize: trim trailing whitespace per line, remove empty trailing lines
       const lines = raw.split('\n').map(l => l.trimEnd());
       // Store raw count before trimming (subtract 1 for trailing newline from tmuxExec)
@@ -183,6 +186,11 @@ export class AgentProcess extends EventEmitter {
       }
       return lines;
     } catch {
+      this.captureFailCount++;
+      if (this.captureFailCount >= 3) {
+        // Pane is gone — emit event so server can auto-detach
+        this.emit('pane-died');
+      }
       return [];
     }
   }

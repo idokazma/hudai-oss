@@ -41,6 +41,7 @@ import { TokenTracker } from './transcript/token-tracker.js';
 import { LoopDetector } from './parser/loop-detector.js';
 import { getDemoPipelines } from './pipeline/demo-pipelines.js';
 import { PipelineAnalyzer } from './pipeline/pipeline-analyzer.js';
+import { loadCache } from './pipeline/pipeline-cache.js';
 import { createLLMProvider, detectProvider } from './llm/index.js';
 import type { LLMProvider } from './llm/llm-provider.js';
 import { InsightEngine } from './llm/insight-engine.js';
@@ -455,6 +456,11 @@ async function attachToPane(tmuxTarget: string) {
     // ─────────────────────────────────────────────────────────────────
   });
 
+  agent.on('pane-died', () => {
+    console.log('[agent] Tmux pane died — auto-detaching');
+    detachFromPane();
+  });
+
   agent.on('pane-content', (content: string, caret: { x: number; lineIndex: number } | null) => {
     // Track when pane content actually changes (for stale detection)
     const paneChanged = content !== lastPaneContent;
@@ -588,39 +594,52 @@ async function attachToPane(tmuxTarget: string) {
     console.error('[graph] Failed to build graph:', err);
   }
 
-  // Clear stale pipeline immediately so clients don't see old project's pipeline
-  cachedPipelineLayer = null;
-  broadcast({ kind: 'pipeline.full', layer: { pipelines: [] } });
-
-  // Pipeline analysis — LLM-based or fallback to demo
+  // Load pipeline from disk cache — trust it at project level.
+  // Incremental updates happen via IncrementalRefreshManager during the session.
+  // Don't null cachedPipelineLayer — send existing cache immediately if available,
+  // then async-load from disk and update if different project.
+  if (cachedPipelineLayer) {
+    broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
+  }
   if (paneCwd) {
-    if (llmProvider) {
-      broadcast({ kind: 'pipeline.analyzing', status: 'started' });
-      const pipelineSessionId = sessionId;
-      const analyzer = new PipelineAnalyzer(llmProvider);
-      const graphSnapshot = graphBuilder.getGraph();
-      console.log(`[pipeline] Starting analysis (${graphSnapshot.nodes.length} nodes, ${graphSnapshot.edges.length} edges)`);
-      analyzer.analyze(paneCwd, graphSnapshot)
-        .then((layer) => {
-          console.log(`[pipeline] Analysis complete: ${layer.pipelines.length} pipelines`);
-          if (sessionState.sessionId !== pipelineSessionId) {
-            console.log(`[pipeline] Session changed, discarding result`);
-            return;
-          }
-          cachedPipelineLayer = layer;
-          broadcast({ kind: 'pipeline.full', layer });
-          broadcast({ kind: 'pipeline.analyzing', status: 'complete' });
-        })
-        .catch((err) => {
-          console.error('[pipeline] Analysis failed:', err);
-          if (sessionState.sessionId === pipelineSessionId) {
+    const pipelineRootDir = paneCwd;
+    loadCache(pipelineRootDir).then((cache) => {
+      if (cache && cache.pipelines.length > 0 && sessionState.sessionId === sessionId) {
+        cachedPipelineLayer = { pipelines: cache.pipelines };
+        broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
+        console.log(`[pipeline] Loaded ${cache.pipelines.length} pipelines from cache`);
+        return; // Cache exists — no LLM needed on attach
+      }
+
+      // No cache — run full analysis if LLM is available
+      if (llmProvider) {
+        broadcast({ kind: 'pipeline.analyzing', status: 'started' });
+        const pipelineSessionId = sessionId;
+        const analyzer = new PipelineAnalyzer(llmProvider);
+        const graphSnapshot = graphBuilder.getGraph();
+        console.log(`[pipeline] No cache — starting full analysis (${graphSnapshot.nodes.length} nodes)`);
+        analyzer.analyze(pipelineRootDir, graphSnapshot)
+          .then((layer) => {
+            console.log(`[pipeline] Analysis complete: ${layer.pipelines.length} pipelines`);
+            if (sessionState.sessionId !== pipelineSessionId) return;
+            cachedPipelineLayer = layer;
+            broadcast({ kind: 'pipeline.full', layer });
             broadcast({ kind: 'pipeline.analyzing', status: 'complete' });
-          }
-        });
-    } else {
-      cachedPipelineLayer = getDemoPipelines();
-      broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
-    }
+          })
+          .catch((err) => {
+            console.error('[pipeline] Analysis failed:', err);
+            if (sessionState.sessionId === pipelineSessionId) {
+              broadcast({ kind: 'pipeline.analyzing', status: 'complete' });
+            }
+          });
+      } else {
+        // No LLM and no cache — fall back to demo
+        cachedPipelineLayer = getDemoPipelines();
+        broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
+      }
+    });
+  } else {
+    broadcast({ kind: 'pipeline.full', layer: { pipelines: [] } });
   }
 
   // Library: check per-project cache before rebuilding
@@ -643,7 +662,7 @@ async function attachToPane(tmuxTarget: string) {
         overview: cached.overview,
         modules: cached.modules,
       });
-    } else if (llmProvider) {
+    } else if (llmProvider && serviceEnabled.library) {
       const buildSessionId = sessionId;
       const libraryBuilder = new LibraryBuilder(llmProvider);
       libraryBuilder.build(paneCwd, graphBuilder.getGraph(), (progress) => {
@@ -844,7 +863,7 @@ function detachFromPane() {
   lastHookActivityAt = 0;
   seenPrompts.clear();
   cachedConfig = null;
-  cachedPipelineLayer = null;
+  // Keep cachedPipelineLayer — pipelines are project-level, not session-level
   cachedLibraryManifest = null;
   refreshManager?.reset();
   refreshManager = null;
@@ -1083,10 +1102,15 @@ fastify.register(async function (app) {
       socket.send(JSON.stringify(outputMsg));
     }
 
-    // Send stored events for the current session so timeline isn't empty on reconnect
+    // Send recent events for the current session so timeline isn't empty on reconnect
+    // Only send the latest few events on reconnect — full history available via replay
+    const RECONNECT_EVENT_CAP = 4;
     if (sessionState.sessionId && sessionState.status !== 'idle') {
       try {
-        const storedEvents = eventStore.getByRange(sessionState.sessionId, 0, Number.MAX_SAFE_INTEGER);
+        const allEvents = eventStore.getByRange(sessionState.sessionId, 0, Number.MAX_SAFE_INTEGER);
+        const storedEvents = allEvents.length > RECONNECT_EVENT_CAP
+          ? allEvents.slice(-RECONNECT_EVENT_CAP)
+          : allEvents;
         if (storedEvents.length > 0) {
           const eventsMsg: ServerMessage = { kind: 'replay.events', events: storedEvents };
           socket.send(JSON.stringify(eventsMsg));
@@ -1174,6 +1198,15 @@ fastify.register(async function (app) {
               }, 1500);
             } catch (err) {
               const resp: ServerMessage = { kind: 'error', message: `Failed to clone session: ${err}` };
+              socket.send(JSON.stringify(resp));
+            }
+            break;
+          }
+
+          case 'pipeline.request': {
+            // Client requesting current pipeline data (e.g., after view switch)
+            if (cachedPipelineLayer) {
+              const resp: ServerMessage = { kind: 'pipeline.full', layer: cachedPipelineLayer };
               socket.send(JSON.stringify(resp));
             }
             break;
@@ -1856,6 +1889,19 @@ fastify.register(async function (app) {
 // Health check
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 
+// ── Pipeline PDF export ─────────────────────────────────────────────
+import { generatePipelinePdf } from './pipeline/pipeline-pdf.js';
+
+fastify.get('/api/pipeline/export', async (_request, reply) => {
+  const layer = cachedPipelineLayer ?? getDemoPipelines();
+  const projectName = sessionState.agentCurrentFile?.split('/')[0] || 'Hudai';
+  const pdf = await generatePipelinePdf(layer, projectName);
+  reply
+    .header('Content-Type', 'application/pdf')
+    .header('Content-Disposition', `attachment; filename="pipeline-audit-${Date.now()}.pdf"`)
+    .send(pdf);
+});
+
 // ── Filesystem path completion ──────────────────────────────────────
 import { completePath, scanRecentProjects } from './fs/path-completer.js';
 
@@ -2043,6 +2089,27 @@ const port = WS_PORT;
 try {
   await fastify.listen({ port, host: '0.0.0.0' });
   console.log(`Hudai server running on http://localhost:${port}`);
+
+  // Load project-level data at startup — these don't need a session attached.
+  // Build codebase graph + load pipeline cache from server's working directory.
+  const serverCwd = process.cwd();
+  (async () => {
+    try {
+      const graph = await graphBuilder.build(serverCwd);
+      broadcast({ kind: 'graph.full', graph });
+      console.log(`[startup] Built codebase graph: ${graph.nodes.length} nodes`);
+    } catch (err) {
+      console.error('[startup] Graph build failed:', err);
+    }
+    try {
+      const cache = await loadCache(serverCwd);
+      if (cache && cache.pipelines.length > 0 && !cachedPipelineLayer) {
+        cachedPipelineLayer = { pipelines: cache.pipelines };
+        broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
+        console.log(`[startup] Loaded ${cache.pipelines.length} pipelines from cache`);
+      }
+    } catch { /* no cache — that's fine */ }
+  })();
 } catch (err) {
   fastify.log.error(err);
   process.exit(1);

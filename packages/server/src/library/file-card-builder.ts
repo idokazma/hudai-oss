@@ -69,7 +69,7 @@ export class FileCardBuilder {
       const prompt = buildFileCardPrompt(batch);
 
       try {
-        const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.');
+        const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.', 'Library files');
 
         let jsonText = responseText.trim();
         if (jsonText.startsWith('```')) {

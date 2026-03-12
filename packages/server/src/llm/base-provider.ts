@@ -79,8 +79,8 @@ export abstract class BaseLLMProvider implements LLMProvider, LLMClient {
   }
 
   /** LLMClient interface — direct generation without queue metadata */
-  async generate(prompt: string): Promise<string> {
-    const result = await this.ask(prompt);
+  async generate(prompt: string, label?: string): Promise<string> {
+    const result = await this.ask(prompt, label);
     return result ?? '';
   }
 

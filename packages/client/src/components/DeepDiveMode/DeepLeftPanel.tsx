@@ -1,5 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import { usePlanStore, type PlanTask, type PlanTaskStatus } from '../../stores/plan-store.js';
+import { wsClient } from '../../ws/ws-client.js';
 import { colors, fonts, alpha } from '../../theme/tokens.js';
 
 const STATUS_ICON: Record<PlanTaskStatus, { glyph: string; color: string }> = {
@@ -79,6 +80,12 @@ function TaskRow({ task }: { task: PlanTask }) {
 
 export const DeepLeftPanel: React.FC = () => {
   const tasks = usePlanStore((s) => s.tasks);
+  const availablePlans = usePlanStore((s) => s.availablePlans);
+
+  // Request plan files list on mount
+  useEffect(() => {
+    wsClient.send({ kind: 'plans.list' });
+  }, []);
 
   const allFiles = useMemo(() => {
     const fileSet = new Set<string>();
@@ -119,17 +126,56 @@ export const DeepLeftPanel: React.FC = () => {
       {/* Task list */}
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
         {tasks.length === 0 ? (
-          <div
-            style={{
-              padding: '24px 12px',
-              fontSize: 12,
-              fontFamily: fonts.body,
-              color: colors.text.dimmed,
-              textAlign: 'center',
-            }}
-          >
-            No plan detected
-          </div>
+          availablePlans.length > 0 ? (
+            <div style={{ padding: '8px 0' }}>
+              <div style={{
+                padding: '4px 12px 8px',
+                fontSize: 10,
+                color: colors.text.dimmed,
+                fontFamily: fonts.mono,
+              }}>
+                {availablePlans.length} plan file{availablePlans.length !== 1 ? 's' : ''} found
+              </div>
+              {availablePlans.map((p) => (
+                <button
+                  key={p.filename}
+                  onClick={() => wsClient.send({ kind: 'plans.load', filename: p.filename })}
+                  style={{
+                    display: 'block',
+                    width: '100%',
+                    padding: '6px 12px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: colors.text.secondary,
+                    fontSize: 11,
+                    fontFamily: fonts.mono,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = colors.surface.hover; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  title={p.title}
+                >
+                  {p.title || p.filename}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div
+              style={{
+                padding: '24px 12px',
+                fontSize: 12,
+                fontFamily: fonts.body,
+                color: colors.text.dimmed,
+                textAlign: 'center',
+              }}
+            >
+              No plan detected
+            </div>
+          )
         ) : (
           tasks.map((task) => <TaskRow key={task.id} task={task} />)
         )}
