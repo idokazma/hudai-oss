@@ -9,6 +9,8 @@ import { useResizablePanel } from '../../hooks/useResizablePanel.js';
 import { ResizeHandle } from '../ResizeHandle.js';
 import { PanePreview } from '../PanePreview.js';
 import { CodebaseMap } from '../CodebaseMap/CodebaseMap.js';
+import { BrowserPreview } from '../BrowserPreview.js';
+import { usePreviewStore } from '../../stores/preview-store.js';
 import { CommanderChat } from '../RightPanel/CommanderChat.js';
 import { DeepLeftPanel } from '../DeepDiveMode/DeepLeftPanel.js';
 import { ConfigSlideOver } from '../ConfigSlideOver/ConfigSlideOver.js';
@@ -34,11 +36,13 @@ export function WorkMode() {
   const panes = usePanesStore((s) => s.panes);
   const mapped = STATUS_MAP[session.status] ?? STATUS_MAP.idle;
 
+  const previewUrl = usePreviewStore((s) => s.url);
   const pipelineAnalyzing = useGraphStore((s) => s.pipelineAnalyzing);
   const libraryBuilding = useLibraryStore((s) => s.isBuilding);
   const libraryProgress = useLibraryStore((s) => s.buildProgress);
 
   const [showPlanPanel, setShowPlanPanel] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [services, setServices] = useState({ llm: false, telegram: false, library: false });
   const [telegramConnected, setTelegramConnected] = useState(false);
@@ -91,6 +95,9 @@ export function WorkMode() {
     collapsible: true,
   });
 
+  // Auto-toggle preview when URL is set/cleared
+  useEffect(() => { setShowPreview(!!previewUrl); }, [previewUrl]);
+
   // Sync sidebar/terminal visibility to density store (for AgentNotification)
   useEffect(() => { setChatVisible(!sidebar.collapsed); }, [sidebar.collapsed, setChatVisible]);
   useEffect(() => { setTerminalVisible(!terminal.collapsed); }, [terminal.collapsed, setTerminalVisible]);
@@ -114,10 +121,14 @@ export function WorkMode() {
         e.preventDefault();
         sidebar.toggleCollapse();
       }
+      if ((e.key === 'w' || e.key === 'W') && previewUrl) {
+        e.preventDefault();
+        setShowPreview((v) => !v);
+      }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [terminal.toggleCollapse, sidebar.toggleCollapse]);
+  }, [terminal.toggleCollapse, sidebar.toggleCollapse, previewUrl]);
 
   // Build grid template
   const cols = [
@@ -500,6 +511,14 @@ export function WorkMode() {
           active={!terminal.collapsed}
           onClick={terminal.toggleCollapse}
         />
+        {previewUrl && (
+          <ToggleBtn
+            label="W"
+            title="Web Preview (W)"
+            active={showPreview}
+            onClick={() => setShowPreview((v) => !v)}
+          />
+        )}
 
         <div style={{ width: 1, height: 16, background: colors.border.subtle }} />
 
@@ -531,10 +550,10 @@ export function WorkMode() {
       {/* ── Plan panel (optional left column) ── */}
       {showPlanPanel && <DeepLeftPanel />}
 
-      {/* ── Center viewport (CodebaseMap includes its own Pipeline/Journey/etc dropdown) ── */}
+      {/* ── Center viewport ── */}
       <div style={{ overflow: 'hidden', minHeight: 0, position: 'relative' }}>
         <div style={{ position: 'absolute', inset: 0 }}>
-          <CodebaseMap />
+          {showPreview && previewUrl ? <BrowserPreview /> : <CodebaseMap />}
         </div>
       </div>
 

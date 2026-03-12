@@ -28,15 +28,15 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-function useLayoutParam(): 'density' | 'classic' | 'mobile' {
+function useLayoutParam(): 'density' | 'legacy' | 'mobile' {
   return useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     const layout = params.get('layout');
     if (layout === 'mobile') return 'mobile';
-    if (layout === 'density') return 'density';
+    if (layout === 'legacy' || layout === 'classic') return 'legacy';
     // Auto-detect mobile devices
     if (window.innerWidth < 768 && 'ontouchstart' in window) return 'mobile';
-    return 'classic';
+    return 'density';
   }, []);
 }
 
@@ -46,7 +46,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      {layout === 'mobile' ? <MobileShell /> : layout === 'density' ? <HudShell /> : <HudLayout />}
+      {layout === 'mobile' ? <MobileShell /> : layout === 'legacy' ? <HudLayout /> : <HudShell />}
     </ErrorBoundary>
   );
 }
