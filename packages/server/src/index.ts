@@ -1905,7 +1905,7 @@ fastify.get('/api/pipeline/export', async (_request, reply) => {
 // ── Filesystem path completion ──────────────────────────────────────
 import { completePath, scanRecentProjects } from './fs/path-completer.js';
 
-// Autocomplete: GET /api/fs/complete?path=/Users/ido/Des → matching directories
+// Autocomplete: GET /api/fs/complete?path=/home/user/Des → matching directories
 fastify.get('/api/fs/complete', async (request) => {
   const { path: partial } = request.query as { path?: string };
   const suggestions = await completePath(partial || '');

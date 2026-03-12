@@ -9,3 +9,4 @@ dist/
 *.db-shm
 *.db-wal
 packages/server/public/
+.claude/settings.local.json

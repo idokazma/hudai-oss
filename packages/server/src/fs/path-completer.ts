@@ -24,8 +24,8 @@ function expandPath(input: string): string {
 /**
  * Complete a partial filesystem path — returns matching directories.
  * Works like terminal tab-completion:
- *   "/Users/ido/Des"  → ["/Users/ido/Desktop"]
- *   "/Users/ido/Desktop/"  → ["/Users/ido/Desktop/Projects", ...]
+ *   "/home/user/Des"  → ["/home/user/Desktop"]
+ *   "/home/user/Desktop/"  → ["/home/user/Desktop/Projects", ...]
  */
 export async function completePath(partial: string): Promise<PathSuggestion[]> {
   if (!partial) {

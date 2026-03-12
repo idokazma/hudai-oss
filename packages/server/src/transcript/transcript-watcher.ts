@@ -51,7 +51,7 @@ export class TranscriptWatcher extends EventEmitter {
   /**
    * Derive the project slug from a project path.
    * Claude Code replaces `/` and `.` with `-`, strips leading slash.
-   * e.g. /Users/ido.kazma/Projects/Hudai -> -Users-ido-kazma-Projects-Hudai
+   * e.g. /home/user/Projects/myapp -> -home-user-Projects-myapp
    */
   static projectSlug(projectPath: string): string {
     const stripped = projectPath.startsWith('/') ? projectPath.slice(1) : projectPath;
