@@ -3,6 +3,61 @@ import { matchPermission } from '../config/permission-matcher.js';
 import { parseTestOutput } from '../parser/test-output-parser.js';
 
 /**
+ * Extract numbered plan steps from text.
+ * Matches patterns like:
+ *   "1. Step one\n2. Step two"
+ *   "**1. `StepName`** — description"
+ *   "1. **Step one** (details)"
+ */
+function extractNumberedPlan(text: string): string[] {
+  const lines = text.split('\n');
+  const steps: string[] = [];
+  let expectedNext = 1;
+
+  for (const line of lines) {
+    // Match numbered lines, optionally with markdown bold/backticks
+    const match = line.match(/^\s*\*{0,2}(\d+)\.\s+(.+)/);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      // Strip markdown formatting for the step text
+      const step = match[2].replace(/\*\*/g, '').replace(/`/g, '').replace(/\s*\(.*$/, '').trim();
+      if (step.length < 5) continue;
+      if (num === expectedNext) {
+        steps.push(step);
+        expectedNext++;
+      } else if (num === 1 && steps.length > 0) {
+        // New plan started — keep the longer sequence
+        if (steps.length < 3) {
+          steps.length = 0;
+          steps.push(step);
+          expectedNext = 2;
+        }
+      }
+    }
+  }
+  return steps;
+}
+
+/**
+ * Extract plan steps from markdown headers (## Step 1, ### Phase 1, etc.)
+ * Filters out generic structural headers and keeps actionable steps.
+ */
+function extractMarkdownPlanSteps(text: string): string[] {
+  const lines = text.split('\n');
+  const steps: string[] = [];
+  const SKIP = /^(Context|Overview|Summary|Plan|Background|Requirements|Notes|References|New File|Test Structure|Helpers|Key Implementation Details|Critical Files|Verification|Test Classes)$/i;
+  for (const line of lines) {
+    const match = line.match(/^#{2,3}\s+(?:(?:Step|Phase|Stage)\s+\d+[.:]\s*)?(.+)/i);
+    if (match) {
+      const step = match[1].trim();
+      if (SKIP.test(step)) continue;
+      if (step.length >= 5) steps.push(step);
+    }
+  }
+  return steps;
+}
+
+/**
  * A single line from Claude Code's JSONL transcript file.
  * Each line has a `type` field indicating the message kind.
  */
@@ -110,6 +165,16 @@ export function translateJsonlEntry(
           },
         }));
       } else if (block.type === 'text' && block.text.trim()) {
+        // Detect inline numbered plans from assistant text (e.g. "1. Step one\n2. Step two\n...")
+        const planSteps = extractNumberedPlan(block.text);
+        if (planSteps.length >= 3) {
+          events.push(makeEvent(sessionId, ts, {
+            category: 'reasoning',
+            type: 'plan.update',
+            source: 'transcript',
+            data: { steps: planSteps, currentStep: 0 },
+          }));
+        }
         events.push(makeEvent(sessionId, ts, {
           category: 'control',
           type: 'raw.output',
@@ -315,6 +380,33 @@ function toolUseToEvent(
           background: input.run_in_background ?? false,
         },
       });
+
+    case 'ExitPlanMode': {
+      // ExitPlanMode contains the full plan markdown in input.plan
+      const planText = input.plan || '';
+      const planSteps = extractNumberedPlan(planText);
+      // Also try to extract from markdown headers (## Step / ### Step)
+      if (planSteps.length < 3) {
+        const headerSteps = extractMarkdownPlanSteps(planText);
+        if (headerSteps.length >= 2) {
+          return makeEvent(sessionId, ts, {
+            category: 'reasoning',
+            type: 'plan.update',
+            source: 'transcript',
+            data: { steps: headerSteps, currentStep: 0 },
+          });
+        }
+      }
+      if (planSteps.length >= 2) {
+        return makeEvent(sessionId, ts, {
+          category: 'reasoning',
+          type: 'plan.update',
+          source: 'transcript',
+          data: { steps: planSteps, currentStep: 0 },
+        });
+      }
+      return null;
+    }
 
     case 'TodoWrite':
     case 'TaskCreate':

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSessionStore } from '../../stores/session-store.js';
+import { useDensityStore } from '../../stores/density-store.js';
 import { wsClient } from '../../ws/ws-client.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
 
@@ -18,6 +19,8 @@ const ACCENT = {
 
 export function AgentNotification() {
   const session = useSessionStore((s) => s.session);
+  const chatVisible = useDensityStore((s) => s.chatVisible);
+  const terminalVisible = useDensityStore((s) => s.terminalVisible);
   const type = getNotificationType(session.agentActivity);
   const detail = session.agentActivityDetail ?? '';
   const options = session.agentActivityOptions ?? [];
@@ -71,7 +74,8 @@ export function AgentNotification() {
     return () => window.removeEventListener('keydown', handler);
   }, [type, approve, reject]);
 
-  if (!type) return null;
+  // Don't show popup when chat or terminal is visible — user can see/handle it there
+  if (!type || chatVisible || terminalVisible) return null;
 
   const accent = ACCENT[type];
   const label = type === 'permission' ? 'PERMISSION REQUEST' : 'QUESTION';

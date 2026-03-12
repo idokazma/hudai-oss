@@ -2,7 +2,7 @@ import type { LlmStatus } from '@hudai/shared';
 
 /** Minimal interface for components that just need raw LLM generation (no queue/status) */
 export interface LLMClient {
-  generate(prompt: string): Promise<string>;
+  generate(prompt: string, label?: string): Promise<string>;
 }
 
 /**

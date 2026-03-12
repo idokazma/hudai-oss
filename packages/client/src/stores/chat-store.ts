@@ -35,7 +35,7 @@ export const useChatStore = create<ChatState>((set) => ({
 
   resolveMessage: (id) =>
     set((s) => ({
-      messages: s.messages.filter((m) => m.id !== id),
+      messages: s.messages.map((m) => m.id === id ? { ...m, resolved: true } : m),
     })),
 
   setTyping: (typing) => set({ typing }),

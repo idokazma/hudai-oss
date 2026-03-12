@@ -103,6 +103,7 @@ export type ClientMessage =
   | { kind: 'file.read'; path: string }
   | { kind: 'file.write'; path: string; content: string }
   | { kind: 'insight.requestSummary' }
+  | { kind: 'pipeline.request' }
   | { kind: 'library.rebuild' }
   | { kind: 'library.request' }
   | { kind: 'skill.install'; skillId: string }

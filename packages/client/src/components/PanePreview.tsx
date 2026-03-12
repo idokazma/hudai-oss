@@ -29,7 +29,7 @@ function StreamTerminal() {
         alignItems: 'center',
         justifyContent: 'center',
         color: colors.text.muted,
-        fontSize: 13,
+        fontSize: 10,
       }}>
         Waiting for agent output...
       </div>
@@ -45,7 +45,7 @@ function StreamTerminal() {
         overflowX: 'hidden',
         padding: '12px 16px',
         fontFamily: fonts.mono,
-        fontSize: 13,
+        fontSize: 10,
         lineHeight: 1.6,
         color: colors.text.primary,
         whiteSpace: 'pre-wrap',
@@ -75,7 +75,7 @@ export function PanePreview() {
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'block',
-      fontSize: 13,
+      fontSize: 10,
       scrollback: 5000,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
       theme: {
@@ -252,7 +252,7 @@ export function PanePreview() {
           alignItems: 'center',
           justifyContent: 'center',
           color: colors.text.muted,
-          fontSize: 13,
+          fontSize: 10,
         }}>
           No session attached
         </div>

@@ -149,7 +149,7 @@ export class ModuleShelfBuilder {
 
       try {
         const prompt = buildModuleShelfPrompt(mod.name, mod.dirPrefix, cards, depEdges);
-        const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.');
+        const responseText = await this.llm.generate(prompt + '\n\nRespond with valid JSON only.', 'Library modules');
 
         let jsonText = responseText.trim();
         if (jsonText.startsWith('```')) {

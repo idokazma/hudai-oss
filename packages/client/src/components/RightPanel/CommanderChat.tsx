@@ -40,6 +40,39 @@ function PermissionBubble({ msg }: { msg: ChatMessage }) {
   const color = notifTypeColors.warning;
   const bg = notifTypeBg.warning;
 
+  // Compact resolved view
+  if (msg.resolved) {
+    return (
+      <div style={{ padding: '2px 10px' }}>
+        <div style={{
+          padding: '4px 10px',
+          background: 'transparent',
+          borderLeft: `2px solid ${colors.text.muted}`,
+          borderRadius: 2,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+        }}>
+          <span style={{ fontSize: 10, color: colors.text.muted, fontFamily: fonts.mono }}>
+            Approved
+          </span>
+          <span style={{
+            fontSize: 10,
+            color: colors.text.dimmed,
+            fontFamily: fonts.mono,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+          }}>
+            {msg.text}
+          </span>
+          <span style={{ fontSize: 9, color: colors.text.dimmed }}>{timeAgo(msg.timestamp)}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: '3px 10px' }}>
       <div style={{
@@ -134,6 +167,39 @@ function QuestionBubble({ msg }: { msg: ChatMessage }) {
       sendFreeText();
     }
   };
+
+  // Compact resolved view
+  if (msg.resolved) {
+    return (
+      <div style={{ padding: '2px 10px' }}>
+        <div style={{
+          padding: '4px 10px',
+          background: 'transparent',
+          borderLeft: `2px solid ${colors.text.muted}`,
+          borderRadius: 2,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+        }}>
+          <span style={{ fontSize: 10, color: colors.text.muted, fontFamily: fonts.mono }}>
+            Answered
+          </span>
+          <span style={{
+            fontSize: 10,
+            color: colors.text.dimmed,
+            fontFamily: fonts.mono,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+          }}>
+            {msg.text}
+          </span>
+          <span style={{ fontSize: 9, color: colors.text.dimmed }}>{timeAgo(msg.timestamp)}</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: '3px 10px' }}>

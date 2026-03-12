@@ -136,6 +136,9 @@ export function useWebSocket() {
               // Chat history persists across session switches for swarm awareness
               useGraphStore.getState().clearPipeline();
               useLibraryStore.getState().clear();
+              // Request pipeline data after a short delay — the server loads cache async
+              // and may not have broadcast it yet when this session.state arrives
+              setTimeout(() => { wsClient.send({ kind: 'pipeline.request' }); }, 500);
             }
             // Track which session the plan store should accept events from
             if (msg.state.sessionId) {
@@ -184,10 +187,14 @@ export function useWebSocket() {
             if (planSessionId) usePlanStore.getState().setSessionId(planSessionId);
             const eventStore = useEventStore.getState();
             eventStore.addEvents(msg.events);
-            // Replay side-effects for each event (graph activity, plans)
+            // Replay side-effects for each event (graph activity only — skip plan
+            // inference to avoid flooding the queue with stale inferred tasks)
             for (const ev of msg.events) {
               addActivity(ev);
-              updatePlan(ev);
+              // Only replay explicit plan events, not inferred phases
+              if (ev.type === 'plan.update' || ev.type === 'task.start' || ev.type === 'task.complete') {
+                updatePlan(ev);
+              }
             }
             // Update session event count from bulk load
             if (msg.events.length > 0) {

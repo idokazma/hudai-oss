@@ -184,64 +184,6 @@ export function CommandOverlay() {
         </div>
       )}
 
-      {/* Context-aware action bar */}
-      {(isWaitingPermission || isWaitingAnswer) && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 12px',
-          borderBottom: `1px solid ${colors.border.subtle}`,
-          background: isWaitingPermission
-            ? `${colors.status.warning}08`
-            : `${colors.accent.primary}08`,
-        }}>
-          {/* Activity detail */}
-          <span style={{
-            flex: 1,
-            fontSize: 12,
-            color: colors.text.secondary,
-            fontFamily: fonts.mono,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}>
-            {activityDetail || (isWaitingPermission ? 'Permission requested' : 'Question from agent')}
-          </span>
-
-          {isWaitingPermission && (
-            <>
-              <button
-                onClick={() => sendCommand('approve')}
-                style={actionBtnStyle(colors.status.success)}
-              >
-                Approve
-              </button>
-              <button
-                onClick={() => sendCommand('reject')}
-                style={actionBtnStyle(colors.status.error)}
-              >
-                Reject
-              </button>
-            </>
-          )}
-
-          {isWaitingAnswer && activityOptions && activityOptions.length > 0 && (
-            <>
-              {activityOptions.map((option) => (
-                <button
-                  key={option}
-                  onClick={() => sendCommand('prompt', { text: option })}
-                  style={actionBtnStyle(colors.accent.primary)}
-                >
-                  {option}
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-      )}
-
       {/* Main input row */}
       <div style={{
         display: 'flex',
