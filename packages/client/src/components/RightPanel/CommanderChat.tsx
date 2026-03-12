@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
+import Markdown from 'react-markdown';
 import { useChatStore } from '../../stores/chat-store.js';
 import { useSessionStore } from '../../stores/session-store.js';
 import { useSwarmStore } from '../../stores/swarm-store.js';
@@ -317,7 +318,7 @@ function NotificationBubble({ msg }: { msg: ChatMessage }) {
         background: bg,
         borderTop: `1px solid ${color}40`,
         borderRadius: 3,
-        fontSize: 12,
+        fontSize: 11,
         fontFamily: fonts.mono,
         color: colors.text.secondary,
         lineHeight: 1.4,
@@ -369,11 +370,11 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
       }}>
         <div style={{
           maxWidth: '85%',
-          padding: '8px 12px',
+          padding: '6px 10px',
           background: alpha(colors.accent.primary, 0.15),
           borderLeft: `3px solid ${colors.accent.blue}`,
           borderRadius: 4,
-          fontSize: 13,
+          fontSize: 11,
           fontFamily: fonts.mono,
           color: colors.text.primary,
           lineHeight: 1.5,
@@ -403,16 +404,15 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
         background: colors.surface.dimmest,
         borderLeft: `3px solid ${borderColor}`,
         borderRadius: 4,
-        fontSize: 13,
-        fontFamily: fonts.mono,
+        fontSize: 11,
+        fontFamily: fonts.body,
         color: colors.text.primary,
         lineHeight: 1.5,
-        whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
       }}>
         {msg.proactive && (
           <span style={{
-            fontSize: 10,
+            fontSize: 9,
             textTransform: 'uppercase',
             letterSpacing: 1,
             color: borderColor,
@@ -422,9 +422,47 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
             {msg.severity === 'critical' ? 'Alert' : msg.severity === 'warning' ? 'Warning' : 'Insight'}
           </span>
         )}
-        {msg.text}
+        <div className="chat-markdown">
+          <Markdown
+            components={{
+              p: ({ children }) => <p style={{ margin: '0 0 6px' }}>{children}</p>,
+              strong: ({ children }) => <strong style={{ color: colors.text.primary, fontWeight: 600 }}>{children}</strong>,
+              em: ({ children }) => <em style={{ color: colors.text.secondary }}>{children}</em>,
+              code: ({ children }) => (
+                <code style={{
+                  background: colors.surface.base,
+                  padding: '1px 4px',
+                  borderRadius: 3,
+                  fontSize: 10,
+                  fontFamily: fonts.mono,
+                  color: colors.accent.blueLight,
+                }}>{children}</code>
+              ),
+              pre: ({ children }) => (
+                <pre style={{
+                  background: colors.surface.base,
+                  padding: '6px 8px',
+                  borderRadius: 4,
+                  fontSize: 10,
+                  fontFamily: fonts.mono,
+                  overflowX: 'auto',
+                  margin: '4px 0',
+                }}>{children}</pre>
+              ),
+              ul: ({ children }) => <ul style={{ margin: '2px 0', paddingLeft: 16 }}>{children}</ul>,
+              ol: ({ children }) => <ol style={{ margin: '2px 0', paddingLeft: 16 }}>{children}</ol>,
+              li: ({ children }) => <li style={{ margin: '1px 0' }}>{children}</li>,
+              h1: ({ children }) => <div style={{ fontSize: 13, fontWeight: 700, margin: '6px 0 4px', color: colors.text.primary }}>{children}</div>,
+              h2: ({ children }) => <div style={{ fontSize: 12, fontWeight: 700, margin: '6px 0 3px', color: colors.text.primary }}>{children}</div>,
+              h3: ({ children }) => <div style={{ fontSize: 11, fontWeight: 600, margin: '4px 0 2px', color: colors.text.primary }}>{children}</div>,
+              a: ({ href, children }) => <a href={href} target="_blank" rel="noopener" style={{ color: colors.accent.blueLight, textDecoration: 'none' }}>{children}</a>,
+            }}
+          >
+            {msg.text}
+          </Markdown>
+        </div>
         <div style={{
-          fontSize: 10,
+          fontSize: 9,
           color: colors.text.muted,
           marginTop: 4,
           textAlign: 'right',
