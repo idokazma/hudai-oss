@@ -29,8 +29,6 @@ interface PlanStore {
   clear: () => void;
 }
 
-let inferCounter = 0;
-
 export const usePlanStore = create<PlanStore>((set, get) => ({
   tasks: [],
   hasExplicitPlan: false,
@@ -51,7 +49,6 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
   },
 
   clear: () => {
-    inferCounter = 0;
     set({ tasks: [], hasExplicitPlan: false, sessionId: '' });
   },
 
@@ -110,84 +107,12 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
       return;
     }
 
-    // No explicit plan — fall back to auto-inference from event patterns
-    // This gives a rough activity log when the agent doesn't use TodoWrite
-
-    if (event.type === 'task.start') {
-      const promptText = event.data.prompt.trim();
-      // Skip trivial/meta prompts
-      if (!promptText || /^\/(clear|help|exit|quit|status)$/i.test(promptText)) return;
-
-      const name = promptText.slice(0, 80);
-
-      // Deduplicate: skip if ANY existing task has the same name
-      if (tasks.some((t) => t.name === name)) return;
-
-      const updated = tasks.map((t) =>
-        t.status === 'active' ? { ...t, status: 'done' as const, completedAt: Date.now() } : t
-      );
-      const newTask: PlanTask = {
-        id: `task-${++inferCounter}`,
-        name,
-        detail: promptText,
-        status: 'active',
-        startedAt: Date.now(),
-        files: [],
-      };
-      set({ tasks: [...updated, newTask] });
-      return;
-    }
-
+    // No explicit plan — only track task.start/task.complete, no auto-inference
     if (event.type === 'task.complete') {
       const updated = tasks.map((t) =>
         t.status === 'active' ? { ...t, status: 'done' as const, completedAt: Date.now() } : t
       );
       set({ tasks: updated });
-      return;
-    }
-
-    // Auto-infer phases from event patterns
-    const category = getEventCategory(event);
-    if (!category) return;
-
-    const activeTask = tasks.find((t) => t.status === 'active');
-    const phaseName = category.charAt(0).toUpperCase() + category.slice(1);
-
-    if (activeTask && activeTask.name.toLowerCase() === phaseName.toLowerCase()) {
-      const filePath = getFilePath(event);
-      if (filePath && !activeTask.files.includes(filePath)) {
-        const updated = tasks.map((t) =>
-          t.id === activeTask.id ? { ...t, files: [...t.files, filePath] } : t
-        );
-        set({ tasks: updated });
-      }
-    } else {
-      // Don't repeat the same phase if the previous done task was the same
-      const lastDone = [...tasks].reverse().find((t) => t.status === 'done');
-      if (lastDone && lastDone.name.toLowerCase() === phaseName.toLowerCase() && !activeTask) {
-        // Reactivate the last done task of the same phase instead
-        const filePath = getFilePath(event);
-        const updated = tasks.map((t) =>
-          t.id === lastDone.id
-            ? { ...t, status: 'active' as const, files: filePath && !t.files.includes(filePath) ? [...t.files, filePath] : t.files }
-            : t
-        );
-        set({ tasks: updated });
-      } else {
-        const updated = tasks.map((t) =>
-          t.status === 'active' ? { ...t, status: 'done' as const, completedAt: Date.now() } : t
-        );
-        const filePath = getFilePath(event);
-        const newTask: PlanTask = {
-          id: `auto-${++inferCounter}`,
-          name: phaseName,
-          detail: getEventDetail(event),
-          status: 'active',
-          startedAt: Date.now(),
-          files: filePath ? [filePath] : [],
-        };
-        set({ tasks: [...updated, newTask] });
-      }
     }
   },
 }));
@@ -201,36 +126,3 @@ function getFilePath(event: AVPEvent): string | null {
   return null;
 }
 
-function getEventDetail(event: AVPEvent): string {
-  if ('data' in event) {
-    const data = event.data as any;
-    if (data.path) return data.path;
-    if (data.command) return data.command;
-    if (data.pattern) return data.pattern;
-    if (data.prompt) return data.prompt;
-  }
-  return event.type;
-}
-
-function getEventCategory(event: AVPEvent): string {
-  switch (event.type) {
-    case 'file.read':
-    case 'search.grep':
-    case 'search.glob':
-      return 'analyzing';
-    case 'file.edit':
-    case 'file.create':
-    case 'file.delete':
-      return 'modifying';
-    case 'test.run':
-    case 'test.result':
-      return 'testing';
-    case 'shell.run':
-      return 'executing';
-    case 'think.start':
-    case 'think.end':
-      return 'thinking';
-    default:
-      return '';
-  }
-}

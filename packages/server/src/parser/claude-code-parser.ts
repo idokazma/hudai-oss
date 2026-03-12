@@ -244,6 +244,9 @@ export class ClaudeCodeParser extends EventEmitter {
       // Fall through to process this line normally
     }
 
+    // Skip Claude Code internal XML tags
+    if (/<\/?(?:task-notification|task-id|tool-use-id|antml)[^>]*>/.test(line)) return;
+
     // Skip decorative/noise
     if (/^[─═┌┐└┘├┤┬┴┼│╔╗╚╝║▐▛▜▝▘╌╭╮╰╯\s]+$/.test(line)) { this.flushNumberedPlan(); return; }
     if (/^[─╌\-]{5,}$/.test(line)) { this.flushNumberedPlan(); return; }
