@@ -266,12 +266,11 @@ ${content.slice(0, 8000)}`;
       }
     };
 
-    // Project-scoped plans first (higher priority)
+    // Project-scoped plans only — global ~/.claude/plans/ contains plans from
+    // all projects/sessions and would pollute the list with irrelevant entries
     if (this.projectRoot) {
       await collectFrom(join(this.projectRoot, '.claude', 'plans'), 'project');
     }
-    // Then global plans
-    await collectFrom(this.plansDir, 'global');
 
     // Sort each group by mtime descending, project plans always first
     plans.sort((a, b) => {
