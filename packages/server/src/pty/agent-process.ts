@@ -177,8 +177,8 @@ export class AgentProcess extends EventEmitter {
     try {
       const raw = tmuxExec(`capture-pane -t "${this.tmuxTarget}" -p -e -S -500`);
       this.captureFailCount = 0;
-      // Normalize: trim trailing whitespace per line, remove empty trailing lines
-      const lines = raw.split('\n').map(l => l.trimEnd());
+      // Normalize: strip XML tags, trim trailing whitespace per line, remove empty trailing lines
+      const lines = raw.split('\n').map(l => l.replace(/<[^>]*>/g, '').trimEnd());
       // Store raw count before trimming (subtract 1 for trailing newline from tmuxExec)
       this.lastRawLineCount = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
       while (lines.length > 0 && lines[lines.length - 1] === '') {

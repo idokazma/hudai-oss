@@ -9,7 +9,7 @@ import { parseTestOutput } from '../parser/test-output-parser.js';
  *   "**1. `StepName`** — description"
  *   "1. **Step one** (details)"
  */
-function extractNumberedPlan(text: string): string[] {
+export function extractNumberedPlan(text: string): string[] {
   const lines = text.split('\n');
   const steps: string[] = [];
   let expectedNext = 1;
@@ -42,7 +42,7 @@ function extractNumberedPlan(text: string): string[] {
  * Extract plan steps from markdown headers (## Step 1, ### Phase 1, etc.)
  * Filters out generic structural headers and keeps actionable steps.
  */
-function extractMarkdownPlanSteps(text: string): string[] {
+export function extractMarkdownPlanSteps(text: string): string[] {
   const lines = text.split('\n');
   const steps: string[] = [];
   const SKIP = /^(Context|Overview|Summary|Plan|Background|Requirements|Notes|References|New File|Test Structure|Helpers|Key Implementation Details|Critical Files|Verification|Test Classes)$/i;

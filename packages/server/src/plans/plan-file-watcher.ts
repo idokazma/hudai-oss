@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { projectDir } from '../persistence/data-dir.js';
 import type { AVPEvent, PlanFileSummary } from '@hudai/shared';
 import type { LLMProvider } from '../llm/llm-provider.js';
+import { extractNumberedPlan, extractMarkdownPlanSteps } from '../transcript/jsonl-to-avp.js';
 
 /**
  * Analyzes plan markdown files from ~/.claude/plans/ using Gemini to extract
@@ -82,7 +83,16 @@ export class PlanFileWatcher extends EventEmitter {
       // Mirror plan file into project-scoped Hudai data dir
       await this.copyToProject(filePath);
 
-      const steps = await this.analyzePlanWithGemini(content);
+      // Try LLM analysis first, fall back to direct markdown parsing
+      let steps: { label: string; files: string[]; description: string }[] | null = null;
+      try {
+        steps = await this.analyzePlanWithGemini(content);
+      } catch {
+        // LLM unavailable or failed — will use fallback
+      }
+      if (!steps || steps.length < 2) {
+        steps = this.parseMarkdownFallback(content);
+      }
       if (!steps || steps.length < 2) return; // not a meaningful plan
 
       // Dedup: don't re-emit identical plans
@@ -111,6 +121,22 @@ export class PlanFileWatcher extends EventEmitter {
     } catch {
       // File read error
     }
+  }
+
+  /**
+   * Parse plan steps directly from markdown without LLM.
+   * Tries numbered list first, then markdown headers.
+   */
+  private parseMarkdownFallback(content: string): { label: string; files: string[]; description: string }[] | null {
+    let steps = extractNumberedPlan(content);
+    if (steps.length < 3) {
+      const headerSteps = extractMarkdownPlanSteps(content);
+      if (headerSteps.length >= 2) {
+        steps = headerSteps;
+      }
+    }
+    if (steps.length < 2) return null;
+    return steps.map((label) => ({ label, files: [], description: '' }));
   }
 
   /**
