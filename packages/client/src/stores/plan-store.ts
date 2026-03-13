@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { AVPEvent, PlanFileSummary } from '@hudai/shared';
 
 export type PlanTaskStatus = 'queued' | 'active' | 'done';
+export type PlanSource = 'plan' | 'todo' | null;
 
 export interface PlanTask {
   id: string;
@@ -15,7 +16,9 @@ export interface PlanTask {
 
 interface PlanStore {
   tasks: PlanTask[];
-  /** Whether the task list came from an explicit plan.update (todo list) */
+  /** Whether the task list is from a plan file ('plan') or TodoWrite/transcript ('todo') */
+  planSource: PlanSource;
+  /** @deprecated Use planSource !== null */
   hasExplicitPlan: boolean;
   /** Session ID this plan belongs to — only events matching this ID are processed */
   sessionId: string;
@@ -31,6 +34,7 @@ interface PlanStore {
 
 export const usePlanStore = create<PlanStore>((set, get) => ({
   tasks: [],
+  planSource: null,
   hasExplicitPlan: false,
   sessionId: '',
   availablePlans: [],
@@ -49,11 +53,11 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
   },
 
   clear: () => {
-    set({ tasks: [], hasExplicitPlan: false, sessionId: '' });
+    set({ tasks: [], planSource: null, hasExplicitPlan: false, sessionId: '' });
   },
 
   updateFromEvent: (event) => {
-    const { tasks, hasExplicitPlan, sessionId } = get();
+    const { tasks, planSource, sessionId } = get();
 
     // Only process events belonging to the current attached session
     if (sessionId && event.sessionId && event.sessionId !== sessionId) return;
@@ -61,6 +65,12 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
     // Handle plan.update — from TodoWrite/TaskCreate, terminal parsing, or plan file watcher
     // This is the primary source of truth for the build queue
     if (event.type === 'plan.update') {
+      const isPlanFile = event.source === 'plan-file';
+      const incomingSource: PlanSource = isPlanFile ? 'plan' : 'todo';
+
+      // If we already have a todo, ignore incoming plan-file events (todo wins)
+      if (planSource === 'todo' && isPlanFile) return;
+
       const steps = event.data.steps;
       const currentStep = event.data.currentStep;
       const stepFiles: string[][] = event.data.stepFiles ?? [];
@@ -69,18 +79,20 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
         id: `plan-${i}`,
         name: step,
         detail: stepDescriptions[i] || step,
-        status: i < currentStep ? 'done' as const : i === currentStep ? 'active' as const : 'queued' as const,
-        startedAt: i <= currentStep ? Date.now() : 0,
-        completedAt: i < currentStep ? Date.now() : undefined,
+        // Plan-file source: all steps are queued (static reference). Todo: use progress.
+        status: isPlanFile
+          ? 'queued' as const
+          : (i < currentStep ? 'done' as const : i === currentStep ? 'active' as const : 'queued' as const),
+        startedAt: isPlanFile ? 0 : (i <= currentStep ? Date.now() : 0),
+        completedAt: isPlanFile ? undefined : (i < currentStep ? Date.now() : undefined),
         files: stepFiles[i] ?? [],
       }));
-      set({ tasks: newTasks, hasExplicitPlan: true });
+      set({ tasks: newTasks, planSource: incomingSource, hasExplicitPlan: true });
       return;
     }
 
-    // If we have an explicit plan from todo list, update file lists on active task
-    // but don't create new tasks from inferred patterns
-    if (hasExplicitPlan) {
+    // File accumulation and task.complete advancement only run for todo source
+    if (planSource === 'todo') {
       const filePath = getFilePath(event);
       if (filePath) {
         const updated = tasks.map((t) => {
@@ -107,7 +119,7 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
       return;
     }
 
-    // No explicit plan — only track task.start/task.complete, no auto-inference
+    // No plan source — only track task.start/task.complete, no auto-inference
     if (event.type === 'task.complete') {
       const updated = tasks.map((t) =>
         t.status === 'active' ? { ...t, status: 'done' as const, completedAt: Date.now() } : t

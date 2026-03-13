@@ -59,11 +59,10 @@ function StepRow({ task }: { task: PlanTask }) {
 
 export function PlanProgress() {
   const tasks = usePlanStore((s) => s.tasks);
-  const hasExplicitPlan = usePlanStore((s) => s.hasExplicitPlan);
+  const planSource = usePlanStore((s) => s.planSource);
 
-  // Only show when there's an actual agent plan (from TodoWrite / plan.update),
-  // not auto-inferred phases like "Analyzing", "Modifying", etc.
-  if (!hasExplicitPlan || tasks.length === 0) return null;
+  // Only show when there's an actual plan or todo
+  if (planSource === null || tasks.length === 0) return null;
 
   const done = tasks.filter((t) => t.status === 'done').length;
   const total = tasks.length;

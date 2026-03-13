@@ -18,11 +18,11 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 export function StatusRing() {
   const session = useSessionStore((s) => s.session);
   const tasks = usePlanStore((s) => s.tasks);
-  const hasExplicitPlan = usePlanStore((s) => s.hasExplicitPlan);
+  const planSource = usePlanStore((s) => s.planSource);
   const mapped = STATUS_MAP[session.status] ?? STATUS_MAP.idle;
 
-  const total = hasExplicitPlan ? tasks.length : 0;
-  const done = hasExplicitPlan ? tasks.filter((t) => t.status === 'done').length : 0;
+  const total = planSource !== null ? tasks.length : 0;
+  const done = planSource !== null ? tasks.filter((t) => t.status === 'done').length : 0;
   const progress = total > 0 ? done / total : 0;
   const dashOffset = CIRCUMFERENCE * (1 - progress);
 

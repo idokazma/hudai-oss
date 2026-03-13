@@ -20,7 +20,7 @@ export type PipelineEdgeType =
   | 'control'
   | 'error';
 
-export type PlanBlockStatus = 'planned' | 'in-progress' | 'completed';
+export type PlanBlockStatus = 'planned' | 'in-progress' | 'completed' | 'blueprint';
 
 export interface PipelineBlock {
   id: string;

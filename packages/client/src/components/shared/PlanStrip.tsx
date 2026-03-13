@@ -11,8 +11,10 @@ const DOT_COLORS: Record<string, string> = {
 
 export const PlanStrip: React.FC = () => {
   const tasks = usePlanStore((s) => s.tasks);
+  const planSource = usePlanStore((s) => s.planSource);
   const setMode = useDensityStore((s) => s.setMode);
 
+  const isPlan = planSource === 'plan';
   const done = tasks.filter((t) => t.status === 'done').length;
   const total = tasks.length;
   const progress = total > 0 ? (done / total) * 100 : 0;
@@ -46,7 +48,7 @@ export const PlanStrip: React.FC = () => {
             textTransform: 'uppercase',
           }}
         >
-          Plan
+          {isPlan ? 'Plan' : 'Todo'}
         </span>
         <span
           style={{
@@ -55,30 +57,32 @@ export const PlanStrip: React.FC = () => {
             color: colors.text.secondary,
           }}
         >
-          {done}/{total} tasks
+          {isPlan ? `${total} steps` : `${done}/${total} tasks`}
         </span>
       </div>
 
-      {/* Progress bar */}
-      <div
-        style={{
-          height: 3,
-          borderRadius: 2,
-          background: colors.surface.base,
-          marginBottom: 6,
-          overflow: 'hidden',
-        }}
-      >
+      {/* Progress bar — only for todo */}
+      {!isPlan && (
         <div
           style={{
-            height: '100%',
-            width: `${progress}%`,
+            height: 3,
             borderRadius: 2,
-            background: colors.accent.primary,
-            transition: 'width 0.3s ease',
+            background: colors.surface.base,
+            marginBottom: 6,
+            overflow: 'hidden',
           }}
-        />
-      </div>
+        >
+          <div
+            style={{
+              height: '100%',
+              width: `${progress}%`,
+              borderRadius: 2,
+              background: colors.accent.primary,
+              transition: 'width 0.3s ease',
+            }}
+          />
+        </div>
+      )}
 
       {/* Task dots */}
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -90,9 +94,11 @@ export const PlanStrip: React.FC = () => {
               width: 6,
               height: 6,
               borderRadius: '50%',
-              background: DOT_COLORS[task.status] ?? colors.text.dimmed,
+              background: isPlan
+                ? colors.block.blueprint
+                : (DOT_COLORS[task.status] ?? colors.text.dimmed),
               boxShadow:
-                task.status === 'active'
+                !isPlan && task.status === 'active'
                   ? `0 0 6px ${alpha(colors.accent.primary, 0.6)}`
                   : 'none',
               transition: 'background 0.2s ease',

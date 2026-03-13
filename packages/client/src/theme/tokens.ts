@@ -104,6 +104,7 @@ export const colors = {
     branch: '#f5a623',
     merge: '#7b61ff',
     planStep: '#9b59b6',
+    blueprint: '#5a6a7a',
   },
 
   // ── Terminal (xterm.js ANSI colors) ──

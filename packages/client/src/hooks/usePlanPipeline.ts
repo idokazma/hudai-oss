@@ -11,9 +11,12 @@ const STATUS_MAP: Record<PlanTaskStatus, PlanBlockStatus> = {
 
 export function usePlanPipeline(): PipelineDefinition | null {
   const tasks = usePlanStore((s) => s.tasks);
+  const planSource = usePlanStore((s) => s.planSource);
 
   return useMemo(() => {
     if (tasks.length === 0) return null;
+
+    const isPlan = planSource === 'plan';
 
     const blocks = tasks.map((task) => ({
       id: task.id,
@@ -21,7 +24,7 @@ export function usePlanPipeline(): PipelineDefinition | null {
       blockType: 'plan-step' as const,
       files: task.files,
       description: task.detail,
-      planStatus: STATUS_MAP[task.status],
+      planStatus: isPlan ? 'blueprint' as PlanBlockStatus : STATUS_MAP[task.status],
     }));
 
     const edges = blocks.slice(0, -1).map((block, i) => ({
@@ -31,13 +34,17 @@ export function usePlanPipeline(): PipelineDefinition | null {
       edgeType: 'control' as const,
     }));
 
+    const done = tasks.filter((t) => t.status === 'done').length;
+
     return {
       id: '__agent-plan__',
-      label: 'Agent Plan',
+      label: isPlan ? 'Plan' : 'Todo',
       category: 'agent-plan' as const,
-      description: `${tasks.filter((t) => t.status === 'done').length}/${tasks.length} steps completed`,
+      description: isPlan
+        ? `${tasks.length} steps`
+        : `${done}/${tasks.length} steps completed`,
       blocks,
       edges,
     };
-  }, [tasks]);
+  }, [tasks, planSource]);
 }

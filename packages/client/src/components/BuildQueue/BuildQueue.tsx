@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { usePlanStore, type PlanTask } from '../../stores/plan-store.js';
+import { usePlanStore, type PlanTask, type PlanSource } from '../../stores/plan-store.js';
 import type { PlanFileSummary } from '@hudai/shared';
 import { useReplayStore } from '../../stores/replay-store.js';
 import { DocsPanel } from './DocsPanel.js';
@@ -222,16 +222,77 @@ function PlanItem({ plan, onLoad, loading }: { plan: PlanFileSummary; onLoad: (f
   );
 }
 
+function PlanStepItem({ task, index }: { task: PlanTask; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = task.files.length > 0 || (task.detail && task.detail !== task.name);
+
+  return (
+    <div
+      onClick={() => hasDetail && setExpanded(!expanded)}
+      style={{
+        padding: '8px 12px',
+        borderLeft: `3px dashed ${colors.block.blueprint}`,
+        cursor: hasDetail ? 'pointer' : 'default',
+      }}
+    >
+      <span style={{
+        fontSize: 13,
+        fontFamily: fonts.mono,
+        color: colors.text.secondary,
+        lineHeight: 1.3,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        display: 'block',
+      }}>
+        {index + 1}. {task.name}
+      </span>
+
+      {/* Expanded detail: description + files */}
+      {expanded && (
+        <div style={{ marginTop: 4, marginLeft: 16 }}>
+          {task.detail && task.detail !== task.name && (
+            <div style={{
+              fontSize: 11,
+              color: colors.text.muted,
+              lineHeight: 1.4,
+              marginBottom: task.files.length > 0 ? 4 : 0,
+            }}>
+              {task.detail}
+            </div>
+          )}
+          {task.files.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {task.files.map((f) => (
+                <span key={f} style={{
+                  fontSize: 11,
+                  fontFamily: fonts.mono,
+                  color: colors.text.muted,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {f.split('/').pop()}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlanBrowser() {
   const plans = usePlanStore((s) => s.availablePlans);
-  const hasExplicitPlan = usePlanStore((s) => s.hasExplicitPlan);
+  const planSource = usePlanStore((s) => s.planSource);
   const [collapsed, setCollapsed] = useState(false);
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
 
   // Clear loading state when a plan is loaded
   useEffect(() => {
-    if (hasExplicitPlan) setLoadingPlan(null);
-  }, [hasExplicitPlan]);
+    if (planSource !== null) setLoadingPlan(null);
+  }, [planSource]);
 
   useEffect(() => {
     wsClient.send({ kind: 'plans.list' });
@@ -353,7 +414,7 @@ function PlanBrowser() {
 
 export function BuildQueue() {
   const tasks = usePlanStore((s) => s.tasks);
-  const hasExplicitPlan = usePlanStore((s) => s.hasExplicitPlan);
+  const planSource = usePlanStore((s) => s.planSource);
   const replayMode = useReplayStore((s) => s.mode);
   const [activeTab, setActiveTab] = useState<LeftTab>('queue');
 
@@ -373,7 +434,7 @@ export function BuildQueue() {
         flexShrink: 0,
       }}>
         <button onClick={() => setActiveTab('queue')} style={tabBtnStyle(activeTab === 'queue')}>
-          {replayMode === 'replay' ? 'Replay' : hasExplicitPlan ? 'Todo' : 'Queue'}
+          {replayMode === 'replay' ? 'Replay' : planSource === 'todo' ? 'Todo' : planSource === 'plan' ? 'Plan' : 'Queue'}
         </button>
         <button onClick={() => setActiveTab('docs')} style={tabBtnStyle(activeTab === 'docs')}>
           Docs
@@ -392,7 +453,7 @@ export function BuildQueue() {
       {/* Queue tab — Task list */}
       {activeTab === 'queue' && (<>
       {/* Back to plan list */}
-      {hasExplicitPlan && tasks.length > 0 && (
+      {planSource !== null && tasks.length > 0 && (
         <button
           onClick={() => usePlanStore.getState().clear()}
           style={{
@@ -437,6 +498,8 @@ export function BuildQueue() {
             <br />
             <span style={{ fontSize: 11 }}>Tasks auto-populate as the agent works</span>
           </div>
+        ) : planSource === 'plan' ? (
+          tasks.map((task, i) => <PlanStepItem key={task.id} task={task} index={i} />)
         ) : (
           [...tasks].reverse().map((task) => <TaskItem key={task.id} task={task} />)
         )}
