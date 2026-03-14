@@ -52,7 +52,7 @@ export function PulseTab() {
         <PlanProgress />
       </div>
 
-      {/* Ask anything input */}
+      {/* Bottom bar: Catch me up + input */}
       <div
         style={{
           flexShrink: 0,
@@ -63,12 +63,31 @@ export function PulseTab() {
           gap: 8,
         }}
       >
+        <button
+          onClick={() => wsClient.send({ kind: 'insight.requestSummary' })}
+          style={{
+            height: 40,
+            padding: '0 14px',
+            borderRadius: 20,
+            border: `1px solid ${alpha(colors.action.think, 0.3)}`,
+            background: alpha(colors.action.think, 0.08),
+            color: colors.action.think,
+            fontSize: 13,
+            fontFamily: fonts.body,
+            fontWeight: 600,
+            cursor: 'pointer',
+            flexShrink: 0,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Catch me up
+        </button>
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask anything about this session..."
+          placeholder="Ask anything..."
           style={{
             flex: 1,
             height: 40,
@@ -80,6 +99,7 @@ export function PulseTab() {
             fontFamily: fonts.mono,
             padding: '0 16px',
             outline: 'none',
+            minWidth: 0,
           }}
         />
         <button
