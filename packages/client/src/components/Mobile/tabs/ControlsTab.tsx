@@ -2,6 +2,7 @@ import { useSessionStore } from '../../../stores/session-store.js';
 import { useConfigStore } from '../../../stores/config-store.js';
 import { wsClient } from '../../../ws/ws-client.js';
 import { colors, fonts, alpha } from '../../../theme/tokens.js';
+import { AdvisorMessages } from '../pulse/AdvisorMessages.js';
 
 function SteeringButtons() {
   const status = useSessionStore((s) => s.session.status);
@@ -331,6 +332,7 @@ export function ControlsTab() {
       <SteeringButtons />
       <PermissionToggles />
       <QuickTemplates />
+      <AdvisorMessages maxMessages={10} />
     </div>
   );
 }

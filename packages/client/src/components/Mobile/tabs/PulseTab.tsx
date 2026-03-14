@@ -2,6 +2,7 @@ import { useState, type KeyboardEvent } from 'react';
 import { StatusRing } from '../pulse/StatusRing.js';
 import { ActionCardStack } from '../pulse/ActionCardStack.js';
 import { PlanProgress } from '../pulse/PlanProgress.js';
+import { AdvisorMessages } from '../pulse/AdvisorMessages.js';
 import { wsClient } from '../../../ws/ws-client.js';
 import { colors, fonts, alpha } from '../../../theme/tokens.js';
 
@@ -47,6 +48,7 @@ export function PulseTab() {
       >
         <StatusRing />
         <ActionCardStack />
+        <AdvisorMessages />
         <PlanProgress />
       </div>
 
