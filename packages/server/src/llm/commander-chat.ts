@@ -47,27 +47,7 @@ const NOISE_EVENT_TYPES = new Set([
   'think.end',       // think.start is enough
 ]);
 
-/** Check if a raw.output line is agent narrative (not tool calls or junk) */
-function isAgentNarrative(text: string): boolean {
-  if (!text || text.length < 15) return false;
-  // Tool invocations: "ToolName(args)" or "Name - action (MCP)(args)"
-  if (/^[A-Z]\w+\(/.test(text)) return false;
-  if (/\(MCP\)\s*\(/.test(text)) return false;
-  if (/^[\w-]+\s+-\s+[\w-]+\s+\(MCP\)/.test(text)) return false;
-  // Thinking duration lines: "Brewed for 7m 29s", etc.
-  if (/^(Brewed|Baked|Fermented|Done|Thinking)\s+(for|in)\s+\d+/i.test(text)) return false;
-  // Code / structural junk
-  if (/^[\{\[\(`<]/.test(text)) return false;
-  if (/^[+-]{3}\s/.test(text)) return false;
-  if (/^@@\s/.test(text)) return false;
-  // File paths standing alone
-  if (/^(\/[\w.\-/]+)+$/.test(text)) return false;
-  // Spinner / status chrome
-  if (/^[·✢✻✶✳✽⚡●⏺]\s*(Fermenting|Baking|Thinking|Planning|Working|Brewing)/i.test(text)) return false;
-  return true;
-}
-
-/** Build a chronological conversation timeline: user prompts + agent notes + todo actions */
+/** Build a chronological conversation timeline: user prompts + agent text responses only */
 function buildConversationTimeline(events: AVPEvent[]): string[] {
   const lines: string[] = [];
   for (const ev of events) {
@@ -78,12 +58,23 @@ function buildConversationTimeline(events: AVPEvent[]): string[] {
       }
     } else if (ev.type === 'raw.output') {
       const text = ((ev as any).data?.text || '').trim();
-      // Capture todo/task tool usage as TODO entries
-      if (/^(TodoWrite|TaskCreate|TaskUpdate|TaskList)\(/.test(text)) {
-        lines.push(`  TODO: ${text}`);
-      } else if (isAgentNarrative(text)) {
-        lines.push(`  A: ${text}`);
-      }
+      if (!text || text.length < 20) continue;
+
+      // Skip tool calls, thinking, code, diffs, spinners, file paths — keep only prose
+      if (/^[A-Z]\w+\(/.test(text)) continue;                    // ToolName(args)
+      if (/\(MCP\)/.test(text)) continue;                         // MCP tool calls
+      if (/^(Brewed|Baked|Fermented|Done|Thinking)\s+(for|in)\s+\d+/i.test(text)) continue;
+      if (/^[\{\[\(`<]/.test(text)) continue;                     // code / JSON / XML
+      if (/^[+-]{3}\s/.test(text)) continue;                      // diff headers
+      if (/^@@\s/.test(text)) continue;                           // diff hunks
+      if (/^(\/[\w.\-/]+)+$/.test(text)) continue;                // bare file paths
+      if (/^[·✢✻✶✳✽⚡●⏺]/.test(text)) continue;                  // spinners / status chrome
+      if (/^(import|export|const|let|var|function|class|if|for|return)\s/.test(text)) continue; // code
+      if (/^```/.test(text)) continue;                            // markdown code fences
+      if (/^\s*#/.test(text)) continue;                           // comments / markdown headers
+      if (/^\d+[.:]\s/.test(text)) continue;                      // numbered lists (plan steps — already in PLAN section)
+
+      lines.push(`  A: ${text}`);
     }
   }
   return lines;
