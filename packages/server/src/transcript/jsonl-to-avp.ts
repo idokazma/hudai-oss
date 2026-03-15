@@ -9,6 +9,23 @@ import { parseTestOutput } from '../parser/test-output-parser.js';
  *   "**1. `StepName`** — description"
  *   "1. **Step one** (details)"
  */
+/**
+ * Heuristic: does a step look like an actionable plan step vs a data list item?
+ * Plan steps typically start with a verb or describe an action to take.
+ */
+const PLAN_VERB_RE = /^(add|build|create|configure|define|deploy|design|extract|fix|generate|handle|implement|install|integrate|migrate|modify|move|parse|refactor|remove|rename|replace|restructure|rewrite|run|set\s?up|test|update|upgrade|validate|verify|wire|write)\b/i;
+const PLAN_ACTION_RE = /^(ensure|make sure|check|clean up|convert|connect|extend|hook|introduce|merge|optimize|prepare|register|split|switch|transform|wrap)\b/i;
+
+function looksLikePlanStep(step: string): boolean {
+  // Starts with an action verb
+  if (PLAN_VERB_RE.test(step) || PLAN_ACTION_RE.test(step)) return true;
+  // Contains a file path or code reference — likely a plan step
+  if (/[/\\][\w.-]+\.\w+/.test(step)) return true;
+  // Contains arrow/colon suggesting "do X → Y" or "Step: description"
+  if (/[→=>:]/.test(step) && step.length > 15) return true;
+  return false;
+}
+
 export function extractNumberedPlan(text: string): string[] {
   const lines = text.split('\n');
   const steps: string[] = [];
@@ -35,6 +52,15 @@ export function extractNumberedPlan(text: string): string[] {
       }
     }
   }
+
+  // Validate: at least half the steps should look like actionable plan steps
+  if (steps.length > 0) {
+    const actionableCount = steps.filter(looksLikePlanStep).length;
+    if (actionableCount < steps.length * 0.4) {
+      return []; // Looks like a regular numbered list, not a plan
+    }
+  }
+
   return steps;
 }
 

@@ -1102,15 +1102,10 @@ fastify.register(async function (app) {
       socket.send(JSON.stringify(outputMsg));
     }
 
-    // Send recent events for the current session so timeline isn't empty on reconnect
-    // Only send the latest few events on reconnect — full history available via replay
-    const RECONNECT_EVENT_CAP = 4;
+    // Send all events for the current session so HumanShell and timeline are populated on reconnect
     if (sessionState.sessionId && sessionState.status !== 'idle') {
       try {
-        const allEvents = eventStore.getByRange(sessionState.sessionId, 0, Number.MAX_SAFE_INTEGER);
-        const storedEvents = allEvents.length > RECONNECT_EVENT_CAP
-          ? allEvents.slice(-RECONNECT_EVENT_CAP)
-          : allEvents;
+        const storedEvents = eventStore.getByRange(sessionState.sessionId, 0, Number.MAX_SAFE_INTEGER);
         if (storedEvents.length > 0) {
           const eventsMsg: ServerMessage = { kind: 'replay.events', events: storedEvents };
           socket.send(JSON.stringify(eventsMsg));

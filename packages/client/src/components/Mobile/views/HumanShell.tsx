@@ -56,13 +56,14 @@ export function HumanShell() {
     return (
       <div
         style={{
-          height: '100%',
+          flex: 1,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           fontFamily: fonts.mono,
           fontSize: 13,
           color: colors.text.dimmed,
+          minHeight: 0,
         }}
       >
         Waiting for conversation...
@@ -73,13 +74,14 @@ export function HumanShell() {
   return (
     <div
       style={{
-        height: '100%',
+        flex: 1,
         overflowY: 'auto',
         WebkitOverflowScrolling: 'touch',
         padding: '12px 0',
         fontFamily: fonts.mono,
         fontSize: 13,
         lineHeight: 1.5,
+        minHeight: 0,
       }}
     >
       {entries.map((entry) => (
