@@ -12,6 +12,7 @@ import { CodebaseMap } from '../CodebaseMap/CodebaseMap.js';
 import { BrowserPreview } from '../BrowserPreview.js';
 import { usePreviewStore } from '../../stores/preview-store.js';
 import { CommanderChat } from '../RightPanel/CommanderChat.js';
+import { HumanShell } from '../Mobile/views/HumanShell.js';
 import { DeepLeftPanel } from '../DeepDiveMode/DeepLeftPanel.js';
 import { ConfigSlideOver } from '../ConfigSlideOver/ConfigSlideOver.js';
 import { SpawnModal } from '../shared/SpawnModal.js';
@@ -44,6 +45,7 @@ export function WorkMode() {
   const [showPlanPanel, setShowPlanPanel] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<'chat' | 'session'>('chat');
   const [services, setServices] = useState({ llm: false, telegram: false, library: false });
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
@@ -557,7 +559,7 @@ export function WorkMode() {
         </div>
       </div>
 
-      {/* ── Right sidebar (optional) — Chat only ── */}
+      {/* ── Right sidebar (optional) — Chat / Session tabs ── */}
       {!sidebar.collapsed && (
         <div
           style={{
@@ -567,9 +569,41 @@ export function WorkMode() {
             borderLeft: `1px solid ${colors.border.subtle}`,
             overflow: 'hidden',
             width: sidebar.size,
+            height: '100%',
+            minHeight: 0,
           }}
         >
-          <CommanderChat />
+          {/* Tab switcher */}
+          <div style={{
+            display: 'flex',
+            borderBottom: `1px solid ${colors.border.subtle}`,
+            flexShrink: 0,
+          }}>
+            {(['chat', 'session'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setSidebarTab(tab)}
+                style={{
+                  flex: 1,
+                  padding: '5px 0',
+                  fontSize: 11,
+                  fontFamily: fonts.mono,
+                  background: sidebarTab === tab ? alpha(colors.accent.primary, 0.15) : 'transparent',
+                  border: 'none',
+                  borderBottom: sidebarTab === tab ? `2px solid ${colors.accent.primary}` : '2px solid transparent',
+                  color: sidebarTab === tab ? colors.text.primary : colors.text.muted,
+                  cursor: 'pointer',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                }}
+              >
+                {tab === 'chat' ? 'Chat' : 'Human Term'}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex: 1, overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            {sidebarTab === 'chat' ? <CommanderChat /> : <HumanShell />}
+          </div>
         </div>
       )}
 
