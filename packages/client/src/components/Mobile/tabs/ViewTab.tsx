@@ -8,8 +8,9 @@ import { useChatStore } from '../../../stores/chat-store.js';
 import { colors, fonts, alpha, EVENT_COLORS } from '../../../theme/tokens.js';
 import type { FileNode } from '@hudai/shared';
 import { useEffect } from 'react';
+import { HumanShell } from '../views/HumanShell.js';
 
-type ViewMode = 'journey' | 'files' | 'pipeline';
+type ViewMode = 'conversation' | 'journey' | 'files' | 'pipeline';
 
 const TYPE_ICONS: Record<JourneyEntry['type'], string> = {
   file: '📄',
@@ -623,7 +624,7 @@ function PipelineList() {
 }
 
 export function ViewTab() {
-  const [mode, setMode] = useState<ViewMode>('journey');
+  const [mode, setMode] = useState<ViewMode>('conversation');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -638,6 +639,7 @@ export function ViewTab() {
         }}
       >
         {([
+          { id: 'conversation' as const, label: 'Chat' },
           { id: 'journey' as const, label: 'Journey' },
           { id: 'files' as const, label: 'Files' },
           { id: 'pipeline' as const, label: 'Pipeline' },
@@ -671,6 +673,7 @@ export function ViewTab() {
           WebkitOverflowScrolling: 'touch',
         }}
       >
+        {mode === 'conversation' && <HumanShell />}
         {mode === 'journey' && <JourneyView />}
         {mode === 'files' && <FilesView />}
         {mode === 'pipeline' && <PipelineList />}
