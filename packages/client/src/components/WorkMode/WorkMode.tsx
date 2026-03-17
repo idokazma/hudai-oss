@@ -16,6 +16,8 @@ import { HumanShell } from '../Mobile/views/HumanShell.js';
 import { DeepLeftPanel } from '../DeepDiveMode/DeepLeftPanel.js';
 import { ConfigSlideOver } from '../ConfigSlideOver/ConfigSlideOver.js';
 import { SpawnModal } from '../shared/SpawnModal.js';
+import { ThreadDetailView } from './ThreadDetailView.js';
+import { useThreadStore } from '../../stores/thread-store.js';
 import { useConfigPanelStore } from '../../stores/config-panel-store.js';
 import { wsClient } from '../../ws/ws-client.js';
 import type { ServerMessage } from '@hudai/shared';
@@ -38,6 +40,7 @@ export function WorkMode() {
   const mapped = STATUS_MAP[session.status] ?? STATUS_MAP.idle;
 
   const previewUrl = usePreviewStore((s) => s.url);
+  const selectedThreadId = useThreadStore((s) => s.selectedThreadId);
   const pipelineAnalyzing = useGraphStore((s) => s.pipelineAnalyzing);
   const libraryBuilding = useLibraryStore((s) => s.isBuilding);
   const libraryProgress = useLibraryStore((s) => s.buildProgress);
@@ -45,7 +48,7 @@ export function WorkMode() {
   const [showPlanPanel, setShowPlanPanel] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [sidebarTab, setSidebarTab] = useState<'chat' | 'session'>('chat');
+  const [terminalMode, setTerminalMode] = useState<'raw' | 'human'>('raw');
   const [services, setServices] = useState({ llm: false, telegram: false, library: false });
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
@@ -557,9 +560,10 @@ export function WorkMode() {
         <div style={{ position: 'absolute', inset: 0 }}>
           {showPreview && previewUrl ? <BrowserPreview /> : <CodebaseMap />}
         </div>
+        {selectedThreadId && <ThreadDetailView />}
       </div>
 
-      {/* ── Right sidebar (optional) — Chat / Session tabs ── */}
+      {/* ── Right sidebar (optional) — Chat ── */}
       {!sidebar.collapsed && (
         <div
           style={{
@@ -569,41 +573,9 @@ export function WorkMode() {
             borderLeft: `1px solid ${colors.border.subtle}`,
             overflow: 'hidden',
             width: sidebar.size,
-            height: '100%',
-            minHeight: 0,
           }}
         >
-          {/* Tab switcher */}
-          <div style={{
-            display: 'flex',
-            borderBottom: `1px solid ${colors.border.subtle}`,
-            flexShrink: 0,
-          }}>
-            {(['chat', 'session'] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setSidebarTab(tab)}
-                style={{
-                  flex: 1,
-                  padding: '5px 0',
-                  fontSize: 11,
-                  fontFamily: fonts.mono,
-                  background: sidebarTab === tab ? alpha(colors.accent.primary, 0.15) : 'transparent',
-                  border: 'none',
-                  borderBottom: sidebarTab === tab ? `2px solid ${colors.accent.primary}` : '2px solid transparent',
-                  color: sidebarTab === tab ? colors.text.primary : colors.text.muted,
-                  cursor: 'pointer',
-                  textTransform: 'uppercase',
-                  letterSpacing: 1,
-                }}
-              >
-                {tab === 'chat' ? 'Chat' : 'Human Term'}
-              </button>
-            ))}
-          </div>
-          <div style={{ flex: 1, overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            {sidebarTab === 'chat' ? <CommanderChat /> : <HumanShell />}
-          </div>
+          <CommanderChat />
         </div>
       )}
 
@@ -623,8 +595,47 @@ export function WorkMode() {
           gridColumn: '1 / -1',
           overflow: 'hidden',
           minHeight: 0,
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
         }}>
-          <PanePreview />
+          {/* Mode toggle — top right */}
+          <div style={{
+            position: 'absolute',
+            top: 4,
+            right: 12,
+            zIndex: 10,
+            display: 'flex',
+            borderRadius: 4,
+            overflow: 'hidden',
+            border: `1px solid ${colors.border.subtle}`,
+            background: colors.bg.panel,
+          }}>
+            {(['raw', 'human'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setTerminalMode(m)}
+                style={{
+                  padding: '3px 10px',
+                  fontSize: 10,
+                  fontFamily: fonts.mono,
+                  fontWeight: 600,
+                  letterSpacing: '0.04em',
+                  background: terminalMode === m ? alpha(colors.accent.primary, 0.2) : 'transparent',
+                  border: 'none',
+                  borderRight: m === 'raw' ? `1px solid ${colors.border.subtle}` : 'none',
+                  color: terminalMode === m ? colors.accent.primary : colors.text.muted,
+                  cursor: 'pointer',
+                  textTransform: 'uppercase',
+                }}
+              >
+                {m === 'raw' ? 'Terminal' : 'Human'}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            {terminalMode === 'raw' ? <PanePreview /> : <HumanShell />}
+          </div>
         </div>
       ) : (
         <div style={{ gridColumn: '1 / -1', display: 'none' }} />

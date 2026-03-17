@@ -372,19 +372,40 @@ export function useForceGraph(
   }, [agentCurrentFile, graph, architecture]);
 
   // Movement trail — resolve to visible nodes
+  // Journey trail from thread selection overrides live movement trail
   const movementTrail = useSessionStore((s) => s.movementTrail);
+  const journeyTrail = useGraphStore((s) => s.journeyTrail);
+  const journeyHighlightFiles = useGraphStore((s) => s.journeyHighlightFiles);
   useEffect(() => {
     if (!rendererRef.current) return;
+    const activeTrail = journeyTrail.length > 0 ? journeyTrail : movementTrail;
     if (!simRef.current || !graph) {
-      rendererRef.current.setTrail(movementTrail);
+      rendererRef.current.setTrail(activeTrail);
       return;
     }
     const { nodeById } = simRef.current;
-    const resolvedTrail = movementTrail
+    const resolvedTrail = activeTrail
       .map((f) => nodeById.has(f) ? f : resolveToVisibleNode(f, graph.nodes, nodeById))
       .filter((f): f is string => f !== null);
     rendererRef.current.setTrail(resolvedTrail);
-  }, [movementTrail, graph]);
+
+    // Boost heat on journey highlighted files so they glow on the map
+    if (journeyHighlightFiles.size > 0 && graph) {
+      for (const [filePath, action] of journeyHighlightFiles) {
+        const nodeId = nodeById.has(filePath) ? filePath
+          : resolveToVisibleNode(filePath, graph.nodes, nodeById);
+        if (nodeId) {
+          const node = nodeById.get(nodeId);
+          if (node) {
+            node.heat = Math.max(node.heat, 0.8);
+            if (action === 'edit' || action === 'create' || action === 'delete') {
+              (node as any).modified = true;
+            }
+          }
+        }
+      }
+    }
+  }, [movementTrail, journeyTrail, journeyHighlightFiles, graph]);
 
   // Failing files — bubble up to visible group nodes when collapsed
   const failingFiles = useGraphStore((s) => s.failingFiles);

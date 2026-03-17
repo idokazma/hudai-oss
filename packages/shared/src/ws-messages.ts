@@ -7,6 +7,7 @@ import type { PipelineLayer, PipelineBlock } from './pipeline-types.js';
 import type { InsightSummary, InsightIntent, InsightNotification } from './insight-types.js';
 import type { LibraryBuildProgress, ProjectOverview, ModuleShelf } from './library-types.js';
 import type { ChatMessage } from './chat-types.js';
+import type { ThreadSummary } from './thread-types.js';
 
 // Session summary for history listing
 export interface SessionSummary {
@@ -81,6 +82,8 @@ export type ServerMessage =
   | { kind: 'generate.result'; type: 'skill' | 'agent'; name: string; filename: string; content: string; success: boolean; error?: string }
   | { kind: 'agent.output'; text: string; append: boolean }
   | { kind: 'agent.status'; running: boolean; claudeSessionId?: string }
+  | { kind: 'thread.update'; thread: ThreadSummary }
+  | { kind: 'thread.list'; threads: ThreadSummary[] }
   | { kind: 'error'; message: string };
 
 export interface TmuxPane {
@@ -132,7 +135,8 @@ export type ClientMessage =
   | { kind: 'generate.save'; type: 'skill' | 'agent'; filename: string; content: string }
   | { kind: 'agent.start'; projectPath: string; prompt?: string; label: string }
   | { kind: 'agent.resume'; prompt: string }
-  | { kind: 'agent.stop' };
+  | { kind: 'agent.stop' }
+  | { kind: 'thread.list' };
 
 export type AgentActivity =
   | 'working'           // Actively processing (thinking, tool use, etc.)

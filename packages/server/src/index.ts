@@ -47,6 +47,7 @@ import type { LLMProvider } from './llm/llm-provider.js';
 import { InsightEngine } from './llm/insight-engine.js';
 import { CommanderChat } from './llm/commander-chat.js';
 import { SwarmRegistry } from './llm/swarm-registry.js';
+import { ThreadSummarizer } from './llm/thread-summarizer.js';
 import { generateSkill, generateAgent } from './llm/generator.js';
 import { LibraryBuilder } from './library/library-builder.js';
 import { IncrementalRefreshManager } from './refresh/refresh-manager.js';
@@ -140,6 +141,12 @@ if (commanderChat && savedProactivePrompt) {
 if (insightEngine && commanderChat) {
   // Proactive insights disabled — chat reserved for user ↔ advisor + actionable prompts
 }
+let threadSummarizer = llmProvider ? new ThreadSummarizer(llmProvider) : null;
+if (threadSummarizer) {
+  threadSummarizer.onFlushReady = (msgs) => {
+    for (const msg of msgs) broadcast(msg);
+  };
+}
 let cachedPipelineLayer: PipelineLayer | null = null;
 let cachedLibraryManifest: LibraryManifest | null = null;
 const libraryCache = new Map<string, LibraryManifest>();
@@ -198,6 +205,11 @@ function applyActivityUpdate(update: ActivityUpdate) {
   // Mark idle when agent transitions to waiting_input
   if (update.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
     idleNotified = true;
+    // Finalize active thread on idle
+    if (threadSummarizer) {
+      threadSummarizer.onActivityIdle();
+      for (const msg of threadSummarizer.flush()) broadcast(msg);
+    }
   }
 
   // Forward activity transitions to insight engine
@@ -390,6 +402,12 @@ function handleEvent(event: AVPEvent) {
     for (const msg of commanderChat.flush()) {
       broadcast(msg);
     }
+  }
+
+  // Thread summarizer: group events into threads and generate summaries
+  if (threadSummarizer) {
+    threadSummarizer.onEvent(event);
+    for (const msg of threadSummarizer.flush()) broadcast(msg);
   }
 
   broadcast({ kind: 'event', event });
@@ -831,6 +849,28 @@ async function attachToPane(tmuxTarget: string) {
     }
   }
 
+  // Send recent events from previous sessions of this project so HumanShell is populated immediately
+  try {
+    const REPLAY_TIME_WINDOW = 12 * 60 * 60 * 1000;
+    // Use the latest event timestamp as anchor — "last active 12 hours" not "last 12 clock hours"
+    const latestTs = eventStore.getLatestProjectTimestamp(tmuxTarget);
+    const anchor = latestTs ?? Date.now();
+    const cutoff = anchor - REPLAY_TIME_WINDOW;
+    const projectEvents = eventStore.getByProject(tmuxTarget, cutoff, 2000);
+    console.log(`[attach] Project history: target=${tmuxTarget}, latestTs=${latestTs}, cutoff=${new Date(cutoff).toISOString()}, events=${projectEvents.length}, taskStarts=${projectEvents.filter(e => e.type === 'task.start').length}`);
+    if (projectEvents.length > 0) {
+      const eventsMsg: ServerMessage = { kind: 'replay.events', events: projectEvents };
+      broadcast(eventsMsg);
+      // Bootstrap thread summarizer from historical events
+      if (threadSummarizer) {
+        threadSummarizer.bootstrap(projectEvents, tmuxTarget);
+        for (const msg of threadSummarizer.flush()) broadcast(msg);
+      }
+    }
+  } catch (err) {
+    console.error('[attach] Failed to send project history:', err);
+  }
+
   return sessionId;
 }
 
@@ -873,6 +913,7 @@ function detachFromPane() {
   loopDetector.reset();
   insightEngine?.reset();
   commanderChat?.reset(); // Only clears pending messages + sessionId, preserves chat history
+  threadSummarizer?.reset();
   updateSessionState({
     sessionId: '',
     status: 'idle',
@@ -904,6 +945,7 @@ function stopAgent() {
   loopDetector.reset();
   insightEngine?.reset();
   commanderChat?.reset();
+  threadSummarizer?.reset();
   updateSessionState({
     sessionId: '',
     status: 'idle',
@@ -1102,16 +1144,45 @@ fastify.register(async function (app) {
       socket.send(JSON.stringify(outputMsg));
     }
 
-    // Send all events for the current session so HumanShell and timeline are populated on reconnect
+    // Send recent events for the current session so HumanShell and timeline are populated on reconnect
+    // Cap at 2000 events and 12 hours to keep the payload reasonable
+    const RECONNECT_EVENT_CAP = 2000;
+    const RECONNECT_TIME_WINDOW = 12 * 60 * 60 * 1000; // 12 hours
     if (sessionState.sessionId && sessionState.status !== 'idle') {
       try {
-        const storedEvents = eventStore.getByRange(sessionState.sessionId, 0, Number.MAX_SAFE_INTEGER);
-        if (storedEvents.length > 0) {
-          const eventsMsg: ServerMessage = { kind: 'replay.events', events: storedEvents };
-          socket.send(JSON.stringify(eventsMsg));
+        const tmuxTarget = sessionState.tmuxTarget;
+        if (tmuxTarget) {
+          // Send cross-session project history (same as attachToPane)
+          const latestTs = eventStore.getLatestProjectTimestamp(tmuxTarget);
+          const anchor = latestTs ?? Date.now();
+          const cutoff = anchor - RECONNECT_TIME_WINDOW;
+          const projectEvents = eventStore.getByProject(tmuxTarget, cutoff, RECONNECT_EVENT_CAP);
+          if (projectEvents.length > 0) {
+            const eventsMsg: ServerMessage = { kind: 'replay.events', events: projectEvents };
+            socket.send(JSON.stringify(eventsMsg));
+          }
+        } else {
+          const cutoff = Date.now() - RECONNECT_TIME_WINDOW;
+          const allEvents = eventStore.getByRange(sessionState.sessionId, cutoff, Number.MAX_SAFE_INTEGER);
+          const storedEvents = allEvents.length > RECONNECT_EVENT_CAP
+            ? allEvents.slice(-RECONNECT_EVENT_CAP)
+            : allEvents;
+          if (storedEvents.length > 0) {
+            const eventsMsg: ServerMessage = { kind: 'replay.events', events: storedEvents };
+            socket.send(JSON.stringify(eventsMsg));
+          }
         }
       } catch (err) {
         console.error('[ws] Failed to send stored events on connect:', err);
+      }
+    }
+
+    // Send thread data if thread summarizer has state
+    if (threadSummarizer) {
+      const threads = threadSummarizer.getAll();
+      if (threads.length > 0) {
+        const threadMsg: ServerMessage = { kind: 'thread.list', threads };
+        socket.send(JSON.stringify(threadMsg));
       }
     }
 
@@ -1299,6 +1370,14 @@ fastify.register(async function (app) {
               insightEngine.requestSummary(events, sessionState, fullContext || undefined).then((summary) => {
                 if (summary) broadcast({ kind: 'insight.summary', summary });
               });
+            }
+            break;
+          }
+
+          case 'thread.list': {
+            if (threadSummarizer) {
+              const threads = threadSummarizer.getAll();
+              socket.send(JSON.stringify({ kind: 'thread.list', threads } satisfies ServerMessage));
             }
             break;
           }
@@ -1510,6 +1589,10 @@ fastify.register(async function (app) {
                 if (savedSP) commanderChat.setSystemPrompt(savedSP);
                 const savedPP = loadSecrets().advisorProactivePrompt;
                 if (savedPP) commanderChat.setProactivePrompt(savedPP);
+                threadSummarizer = new ThreadSummarizer(llmProvider);
+                threadSummarizer.onFlushReady = (msgs) => {
+                  for (const msg of msgs) broadcast(msg);
+                };
                 llmProvider.verify().then((ok) => {
                   updateSessionState({ llmStatus: ok ? 'connected' : 'error' });
                 });
@@ -1517,6 +1600,7 @@ fastify.register(async function (app) {
                 llmProvider = null;
                 insightEngine = null;
                 commanderChat = null;
+                threadSummarizer = null;
                 updateSessionState({ llmStatus: 'unavailable' });
               }
 

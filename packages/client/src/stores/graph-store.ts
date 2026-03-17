@@ -85,6 +85,12 @@ interface GraphStoreState {
   /** Node ID to temporarily highlight on the map (e.g. from journey hover) */
   highlightNodeId: string | null;
   setHighlightNode: (nodeId: string | null) => void;
+  /** Thread journey trail — ordered file IDs the agent visited in selected thread */
+  journeyTrail: string[];
+  /** Files to highlight with glow for thread journey */
+  journeyHighlightFiles: Map<string, 'read' | 'edit' | 'create' | 'delete'>;
+  setJourney: (trail: string[], highlights: Map<string, 'read' | 'edit' | 'create' | 'delete'>) => void;
+  clearJourney: () => void;
 }
 
 function eventToActivity(event: AVPEvent): ActivityNode | null {
@@ -196,6 +202,10 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   pipelineAnalyzing: false,
   highlightNodeId: null,
   setHighlightNode: (nodeId) => set({ highlightNodeId: nodeId }),
+  journeyTrail: [],
+  journeyHighlightFiles: new Map(),
+  setJourney: (trail, highlights) => set({ journeyTrail: trail, journeyHighlightFiles: highlights }),
+  clearJourney: () => set({ journeyTrail: [], journeyHighlightFiles: new Map() }),
 
   setPipelineLayer: (layer) => set({ pipelineLayer: layer, pipelineAnalyzing: false }),
   setPipelineAnalyzing: (analyzing) => set({ pipelineAnalyzing: analyzing }),

@@ -10,7 +10,7 @@ const MAX_QUEUE_SIZE = 5;
  */
 export abstract class BaseLLMProvider implements LLMProvider, LLMClient {
   private lastCallAt = 0;
-  private queue: Array<{ prompt: string; label: string; resolve: (v: string | null) => void }> = [];
+  private queue: Array<{ prompt: string; label: string; resolve: (v: string | null) => void; quiet?: boolean }> = [];
   private processing = false;
   private _status: LlmStatus = 'connected';
   private _baseStatus: LlmStatus = 'connected';
@@ -78,6 +78,17 @@ export abstract class BaseLLMProvider implements LLMProvider, LLMClient {
     });
   }
 
+  async askQuiet(prompt: string, label = 'LLM'): Promise<string | null> {
+    return new Promise((resolve) => {
+      if (this.queue.length >= MAX_QUEUE_SIZE) {
+        const dropped = this.queue.shift();
+        dropped?.resolve(null);
+      }
+      this.queue.push({ prompt, label, resolve, quiet: true });
+      this.drain();
+    });
+  }
+
   /** LLMClient interface — direct generation without queue metadata */
   async generate(prompt: string, label?: string): Promise<string> {
     const result = await this.ask(prompt, label);
@@ -96,17 +107,17 @@ export abstract class BaseLLMProvider implements LLMProvider, LLMClient {
         await new Promise((r) => setTimeout(r, wait));
       }
 
-      this.trackCallStart(item.label);
+      if (!item.quiet) this.trackCallStart(item.label);
       try {
         this.lastCallAt = Date.now();
         const text = await this.callLLM(item.prompt);
         this._baseStatus = 'connected';
-        this.trackCallEnd();
+        if (!item.quiet) this.trackCallEnd();
         item.resolve(text);
       } catch (err) {
         console.error(`[${this.providerName}] LLM call failed:`, err);
         this._baseStatus = 'error';
-        this.trackCallEnd();
+        if (!item.quiet) this.trackCallEnd();
         item.resolve(null);
       }
     }

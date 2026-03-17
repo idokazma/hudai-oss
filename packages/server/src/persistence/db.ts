@@ -52,6 +52,24 @@ export function getDb(): Database.Database {
     db.exec(`ALTER TABLE sessions ADD COLUMN label TEXT`);
   } catch { /* column already exists */ }
 
+  // Thread summaries cache
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS thread_summaries (
+      thread_id TEXT PRIMARY KEY,
+      project_path TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      phase TEXT NOT NULL,
+      summary TEXT,
+      bullets TEXT,
+      outcome TEXT,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_thread_summaries_project ON thread_summaries(project_path, started_at);
+  `);
+
   return db;
 }
 
