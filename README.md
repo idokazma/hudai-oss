@@ -10,6 +10,22 @@ When an AI agent works on your codebase, you're staring at a scrolling terminal.
 
 Hudai gives you the kind of situational awareness that strategy games give commanders — a minimap, unit status, resource counters, a build queue — applied to your AI coding session.
 
+## Quick Start
+
+**Prerequisites:** Node.js 20+, tmux (Claude Code must be running inside a tmux session)
+
+```bash
+npm install && npm run build:shared && npm run dev:server
+```
+
+Opens on **http://localhost:4200**. Select your tmux session from the dropdown.
+
+For separate frontend dev server (hot reload on :4201):
+
+```bash
+npm run dev:client
+```
+
 ## Design Philosophy
 
 "Observe, don't read." You should understand the state of your agent through color, motion, and position — not by parsing sentences. Hudai borrows from real-time strategy games: the minimap shows where action is happening, the resource bar tells you if you're winning or bleeding out, and the build queue shows what's coming next. Glance-to-understanding time should be under three seconds.
@@ -27,6 +43,7 @@ Two viewing modes — switch with a single click:
 - **Codebase map** — force-directed graph of your project files. Nodes glow as the agent reads or edits them.
 - **Pipeline view** — the agent's current plan rendered as sequential stages. Watch steps complete in real time.
 - **Plan panel** — detected plans (from `ExitPlanMode`, numbered steps, or `.claude/plans/` files) shown as a checklist with live progress.
+- **Thread cards** — each user request becomes a visual card showing prompt, phase (investigating/implementing/testing/done), LLM-generated summary and bullet points, files touched, and outcome. Double-click to open the full detail view with code map and action timeline.
 - **Live terminal** — full pass-through of the agent's session. Type directly into the input bar to talk to the agent.
 - **Advisor chat** — a second AI watches the agent's work and answers your questions with markdown-rendered responses, without interrupting the agent.
 - **Browser preview** — click a URL in the terminal to open an embedded preview with an optional DOM inspector.
@@ -86,7 +103,7 @@ packages/
 └── telegram-bot/   # @hudai/telegram-bot — Optional Telegram remote control
 ```
 
-Monorepo managed with npm workspaces + turborepo. A single `npm start` serves both backend and frontend via `@fastify/static`.
+Monorepo managed with npm workspaces + turborepo.
 
 ### Key Server Modules
 
@@ -96,27 +113,10 @@ Monorepo managed with npm workspaces + turborepo. A single `npm start` serves bo
 - **JSONL parser** — extracts events from Claude Code transcript files (plan detection, tool use)
 - **Hooks handler** — maps Claude Code hook notifications to activity states
 - **Insight engine** — LLM-powered intent tracking, proactive notifications on loops/failures
+- **Thread summarizer** — groups agent work into threads, generates LLM summaries, caches in SQLite
 - **Library builder** — analyzes codebase structure, generates file cards and module shelves
 - **Swarm registry** — tracks multiple concurrent agent sessions
 - **Pipeline analyzer** — builds dependency graphs and pipeline visualizations
-
-## Quick Start
-
-**Prerequisites:** Node.js 20+, tmux (for tmux mode — Claude Code must be running inside a tmux session)
-
-```bash
-npm install
-npm run build:shared       # Build shared types first
-npm run dev:server         # Backend — localhost:4200
-npm run dev:client         # Frontend — localhost:4201
-```
-
-Or build everything and run as a single server:
-
-```bash
-npm run build:bundle       # Build shared + server + client, copy assets
-npm start                  # Serves everything on localhost:4200
-```
 
 ## Telegram Bot
 

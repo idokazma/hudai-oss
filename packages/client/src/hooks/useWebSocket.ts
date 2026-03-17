@@ -17,6 +17,7 @@ import { useLibraryStore } from '../stores/library-store.js';
 import { useChatStore } from '../stores/chat-store.js';
 import { usePreviewStore } from '../stores/preview-store.js';
 import { useSwarmStore } from '../stores/swarm-store.js';
+import { useThreadStore } from '../stores/thread-store.js';
 
 let chatNotifCounter = 0;
 let lastChatActivity: string | null = null;
@@ -128,6 +129,7 @@ export function useWebSocket() {
               clearPlan();
               clearNotifications();
               useInsightStore.getState().clear();
+              useThreadStore.getState().clear();
               // Reset chat notification state
               lastChatActivity = null;
               lastChatActivityDetail = null;
@@ -320,6 +322,12 @@ export function useWebSocket() {
           break;
         case 'swarm.status':
           useSwarmStore.getState().setSessions(msg.sessions);
+          break;
+        case 'thread.update':
+          useThreadStore.getState().upsertThread(msg.thread);
+          break;
+        case 'thread.list':
+          useThreadStore.getState().setThreads(msg.threads);
           break;
         case 'error':
           console.error('[server]', msg.message);

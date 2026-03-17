@@ -1,151 +1,89 @@
-import { useEffect, useRef } from 'react';
-import { useEventStore } from '../../../stores/event-store.js';
-import { colors, fonts, alpha } from '../../../theme/tokens.js';
-
-interface ConversationEntry {
-  id: string;
-  timestamp: number;
-  role: 'user' | 'agent';
-  text: string;
-}
-
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
+import { useState, type KeyboardEvent } from 'react';
+import { wsClient } from '../../../ws/ws-client.js';
+import { colors, fonts } from '../../../theme/tokens.js';
+import { ThreadCards } from './ThreadCards.js';
 
 /**
- * HumanShell — a filtered terminal view showing only user messages and agent prose.
- * No tool calls, no diffs, no spinners — just the conversation.
+ * HumanShell — Thread Cards view showing user requests as structured cards
+ * with live phase tracking, LLM summaries, and expandable agent prose.
  */
 export function HumanShell() {
-  const events = useEventStore((s) => s.events);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [input, setInput] = useState('');
 
-  // Extract conversation entries from events
-  const entries: ConversationEntry[] = [];
-  for (const ev of events) {
-    if (ev.type === 'task.start') {
-      const prompt = ((ev as any).data?.prompt || '').trim();
-      if (prompt) {
-        entries.push({
-          id: ev.id,
-          timestamp: ev.timestamp,
-          role: 'user',
-          text: prompt,
-        });
-      }
-    } else if (ev.type === 'raw.output') {
-      const text = ((ev as any).data?.text || '').trim();
-      if (!text || text.length < 10) continue;
-      entries.push({
-        id: ev.id,
-        timestamp: ev.timestamp,
-        role: 'agent',
-        text,
-      });
+  const send = () => {
+    const text = input.trim();
+    if (!text) return;
+    wsClient.send({ kind: 'command', command: { type: 'prompt', data: { text } } });
+    setInput('');
+  };
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
     }
-  }
-
-  // Auto-scroll to bottom on new entries
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [entries.length]);
-
-  if (entries.length === 0) {
-    return (
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontFamily: fonts.mono,
-          fontSize: 13,
-          color: colors.text.dimmed,
-          minHeight: 0,
-        }}
-      >
-        Waiting for conversation...
-      </div>
-    );
-  }
+  };
 
   return (
     <div
       style={{
-        flex: 1,
-        overflowY: 'auto',
-        WebkitOverflowScrolling: 'touch',
-        padding: '12px 0',
-        fontFamily: fonts.mono,
-        fontSize: 13,
-        lineHeight: 1.5,
-        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        overflow: 'hidden',
       }}
     >
-      {entries.map((entry) => (
-        <div
-          key={entry.id}
+      {/* Thread Cards */}
+      <ThreadCards />
+
+      {/* Input line */}
+      <div
+        style={{
+          flexShrink: 0,
+          borderTop: `1px solid ${colors.border.subtle}`,
+          padding: '4px 8px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          background: colors.bg.secondary,
+        }}
+      >
+        <span style={{ color: colors.accent.primary, fontSize: 11, fontFamily: fonts.mono, flexShrink: 0 }}>
+          &gt;
+        </span>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Send to agent..."
           style={{
-            padding: '6px 16px',
-            borderLeft: `2px solid ${
-              entry.role === 'user'
-                ? colors.accent.primary
-                : alpha(colors.text.muted, 0.3)
-            }`,
-            marginBottom: 2,
+            flex: 1,
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            color: colors.text.primary,
+            fontSize: 11,
+            fontFamily: fonts.mono,
+          }}
+        />
+        <button
+          onClick={send}
+          disabled={!input.trim()}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: input.trim() ? colors.accent.primary : colors.text.muted,
+            fontSize: 12,
+            fontFamily: fonts.mono,
+            cursor: input.trim() ? 'pointer' : 'default',
+            padding: '2px 4px',
+            flexShrink: 0,
           }}
         >
-          {/* Timestamp + role tag */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginBottom: 2,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 10,
-                color: colors.text.dimmed,
-              }}
-            >
-              {formatTime(entry.timestamp)}
-            </span>
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                letterSpacing: '0.05em',
-                textTransform: 'uppercase',
-                color:
-                  entry.role === 'user'
-                    ? colors.accent.primary
-                    : colors.text.muted,
-              }}
-            >
-              {entry.role === 'user' ? 'you' : 'agent'}
-            </span>
-          </div>
-
-          {/* Message text */}
-          <div
-            style={{
-              color:
-                entry.role === 'user'
-                  ? colors.text.primary
-                  : colors.text.secondary,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            {entry.text}
-          </div>
-        </div>
-      ))}
-      <div ref={bottomRef} />
+          ↵
+        </button>
+      </div>
     </div>
   );
 }

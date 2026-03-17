@@ -20,4 +20,7 @@ export interface LLMProvider extends LLMClient {
 
   /** Queue a prompt for generation. Returns null on failure. */
   ask(prompt: string, label?: string): Promise<string | null>;
+
+  /** Queue a prompt without updating status/activity indicators. */
+  askQuiet(prompt: string, label?: string): Promise<string | null>;
 }
