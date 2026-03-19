@@ -47,6 +47,9 @@ import type { LLMProvider } from './llm/llm-provider.js';
 import { InsightEngine } from './llm/insight-engine.js';
 import { CommanderChat } from './llm/commander-chat.js';
 import { SwarmRegistry } from './llm/swarm-registry.js';
+import { SessionMonitor } from './swarm/session-monitor.js';
+import { SwarmService } from './swarm/swarm-service.js';
+import type { SessionStatus } from './swarm/session-status.js';
 import { ThreadSummarizer } from './llm/thread-summarizer.js';
 import { generateSkill, generateAgent } from './llm/generator.js';
 import { LibraryBuilder } from './library/library-builder.js';
@@ -152,6 +155,9 @@ let cachedLibraryManifest: LibraryManifest | null = null;
 const libraryCache = new Map<string, LibraryManifest>();
 let refreshManager: IncrementalRefreshManager | null = null;
 const swarmRegistry = new SwarmRegistry(sessionStore, eventStore, () => sessionState.sessionId, () => sessionState.tmuxTarget);
+const swarmService = new SwarmService(sessionStore, eventStore, () => sessionState.sessionId);
+swarmService.start();
+let sessionMonitor: SessionMonitor | null = null;
 const serviceEnabled = { llm: true, telegram: true, library: false };
 let sessionState: SessionState = {
   sessionId: '',
@@ -511,7 +517,23 @@ async function attachToPane(tmuxTarget: string) {
       return;
     }
 
-    // ── Fallback: pane-based activity detection (when hooks are NOT active) ──
+    // ── When SessionMonitor is active, skip pane-based activity detection ──
+    // JSONL-based status detection is more reliable than regex on terminal output.
+    // Pane-analyzer only runs as a tertiary fallback when neither hooks nor SessionMonitor are active.
+    if (sessionMonitor?.active) {
+      // Still do stale detection as safety net
+      const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
+      if (staleSec >= 120 && !idleNotified && sessionState.agentActivity === 'working') {
+        idleNotified = true;
+        applyActivityUpdate({
+          activity: 'waiting_input',
+          detail: 'Agent appears idle (no output for 2 min)',
+        });
+      }
+      return;
+    }
+
+    // ── Tertiary fallback: pane-based activity detection (when neither hooks nor SessionMonitor active) ──
     const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
     const analysis = analyzePaneContent(content);
     if (
@@ -849,6 +871,33 @@ async function attachToPane(tmuxTarget: string) {
     }
   }
 
+  // Start SessionMonitor (JSONL-based status detection — parallel with pane-analyzer)
+  // Priority: hooks > SessionMonitor (JSONL) > pane-analyzer (tmux regex)
+  if (paneCwd) {
+    try {
+      sessionMonitor = new SessionMonitor(sessionId, paneCwd, 'full');
+      // Status changes from JSONL → apply as activity update (when hooks aren't active)
+      sessionMonitor.on('status', (status: SessionStatus) => {
+        if (!hooksActive) {
+          applyActivityUpdate({
+            activity: status.activity,
+            detail: status.detail,
+            options: status.options,
+          });
+          if (status.currentFile) {
+            updateSessionState({ agentCurrentFile: status.currentFile });
+          }
+        }
+      });
+      await sessionMonitor.start();
+      swarmService.setAttachedSession(sessionId);
+      console.log('[session-monitor] Started JSONL-based status detection');
+    } catch (err) {
+      console.error('[session-monitor] Failed to start:', err);
+      sessionMonitor = null;
+    }
+  }
+
   // Send recent events from previous sessions of this project so HumanShell is populated immediately
   try {
     const REPLAY_TIME_WINDOW = 12 * 60 * 60 * 1000;
@@ -875,6 +924,11 @@ async function attachToPane(tmuxTarget: string) {
 }
 
 function detachFromPane() {
+  if (sessionMonitor) {
+    sessionMonitor.stop();
+    sessionMonitor = null;
+    swarmService.setAttachedSession(null);
+  }
   if (transcriptWatcher) {
     transcriptWatcher.stop();
     transcriptWatcher = null;
@@ -2062,6 +2116,10 @@ fastify.post('/api/hooks/notification', async (request, reply) => {
 
   if (update) {
     applyActivityUpdate(update);
+    // Feed hook update into SessionMonitor for status tracking
+    if (sessionMonitor) {
+      sessionMonitor.applyHookUpdate(update);
+    }
   }
 
   return { ok: true };
@@ -2075,6 +2133,9 @@ fastify.post('/api/hooks/working', async (request, reply) => {
   }
   lastHookActivityAt = Date.now();
   applyActivityUpdate({ activity: 'working', detail: undefined });
+  if (sessionMonitor) {
+    sessionMonitor.applyHookUpdate({ activity: 'working' });
+  }
   return { ok: true };
 });
 
@@ -2275,10 +2336,12 @@ startTelegramBot();
 
 // Clean up bot on server shutdown
 process.on('SIGINT', () => {
+  swarmService.stop();
   telegramBotProcess?.kill();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  swarmService.stop();
   telegramBotProcess?.kill();
   process.exit(0);
 });

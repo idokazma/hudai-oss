@@ -210,6 +210,8 @@ export class TranscriptWatcher extends EventEmitter {
 
         try {
           const entry: JsonlEntry = JSON.parse(trimmed);
+          // Emit raw JSONL entry for status detection (SessionMonitor)
+          this.emit('entry', entry);
           const opts: TranslateOptions | undefined = this._permissionRules.length > 0
             ? { permissionRules: this._permissionRules }
             : undefined;
