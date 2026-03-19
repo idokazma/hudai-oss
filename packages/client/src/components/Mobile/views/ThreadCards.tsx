@@ -519,7 +519,6 @@ function ThreadCard({
                 borderTop: `1px solid ${alpha(colors.border.subtle, 0.5)}`,
                 marginTop: 4,
                 padding: '4px 0 2px',
-                maxHeight: 200,
                 overflowY: 'auto',
               }}
             >

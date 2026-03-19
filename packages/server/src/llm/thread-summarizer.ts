@@ -218,6 +218,12 @@ Rules for bullets:
   bootstrap(events: AVPEvent[], projectPath?: string): void {
     this.projectPath = projectPath ?? null;
 
+    // Clear existing threads to avoid accumulation across attach/detach cycles
+    this.threads = [];
+    for (const timer of this.summaryTimers.values()) clearTimeout(timer);
+    this.summaryTimers.clear();
+    this.pendingMessages = [];
+
     // Load cached summaries from DB
     const cachedMap = new Map<string, ThreadSummary>();
     if (projectPath) {

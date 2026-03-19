@@ -4,8 +4,7 @@ import { colors, fonts } from '../../../theme/tokens.js';
 import { ThreadCards } from './ThreadCards.js';
 
 /**
- * HumanShell — Thread Cards view showing user requests as structured cards
- * with live phase tracking, LLM summaries, and expandable agent prose.
+ * HumanShell — Thread-based conversation view with structured task cards.
  */
 export function HumanShell() {
   const [input, setInput] = useState('');
@@ -33,7 +32,7 @@ export function HumanShell() {
         overflow: 'hidden',
       }}
     >
-      {/* Thread Cards */}
+      {/* Thread cards */}
       <ThreadCards />
 
       {/* Input line */}

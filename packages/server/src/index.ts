@@ -1198,6 +1198,13 @@ fastify.register(async function (app) {
             break;
           }
 
+          case 'panes.status': {
+            const panes = AgentProcess.listPanesWithStatus();
+            const resp: ServerMessage = { kind: 'panes.list', panes };
+            socket.send(JSON.stringify(resp));
+            break;
+          }
+
           case 'session.attach':
             attachToPane(msg.tmuxTarget);
             break;
@@ -1279,6 +1286,41 @@ fastify.register(async function (app) {
           }
 
           case 'command':
+            // Spawn agent in a NEW tmux session (not the current one)
+            if (msg.command.type === 'spawn_agent') {
+              const spawnCmd = msg.command;
+              const currentTarget = sessionState.tmuxTarget;
+              const baseName = currentTarget ? currentTarget.split(':')[0] : 'hudai';
+              const agentName = spawnCmd.data.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+              const newSessionName = `${baseName}_${agentName}`;
+
+              // Get the project directory from the current pane
+              let projectPath = process.cwd();
+              if (currentTarget) {
+                try {
+                  projectPath = AgentProcess.getPaneCwd(currentTarget) || projectPath;
+                } catch {}
+              }
+
+              try {
+                const newTarget = AgentProcess.spawnAgent({
+                  projectPath,
+                  prompt: spawnCmd.data.prompt,
+                  sessionName: newSessionName,
+                });
+                console.log(`[spawn-agent] Created tmux session: ${newTarget}`);
+                // Broadcast updated panes list so the UI can see the new session
+                try {
+                  const panes = AgentProcess.listPanes();
+                  broadcast({ kind: 'panes.list', panes });
+                } catch {}
+              } catch (err) {
+                console.error(`[spawn-agent] Failed to create tmux session:`, err);
+                broadcast({ kind: 'error', message: `Failed to spawn agent: ${err}` });
+              }
+              break;
+            }
+
             if (sessionState.mode === 'stream' && streamCommandHandler) {
               streamCommandHandler.handle(msg.command);
               if (msg.command.type === 'pause' || msg.command.type === 'cancel') {

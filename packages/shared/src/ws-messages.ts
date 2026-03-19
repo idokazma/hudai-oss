@@ -86,10 +86,15 @@ export type ServerMessage =
   | { kind: 'thread.list'; threads: ThreadSummary[] }
   | { kind: 'error'; message: string };
 
+export type PaneStatus = 'working' | 'waiting_input' | 'waiting_permission' | 'asking' | 'idle' | 'unknown';
+
 export interface TmuxPane {
   id: string;
   title: string;
   command: string;
+  status?: PaneStatus;
+  /** Last meaningful line from the pane (for context) */
+  statusLine?: string;
 }
 
 // Client -> Server
@@ -103,6 +108,7 @@ export type ClientMessage =
   | { kind: 'session.create'; projectPath: string; prompt?: string; sessionName?: string }
   | { kind: 'session.clone'; tmuxTarget: string; sessionName?: string; prompt?: string }
   | { kind: 'panes.list' }
+  | { kind: 'panes.status' }
   | { kind: 'file.read'; path: string }
   | { kind: 'file.write'; path: string; content: string }
   | { kind: 'insight.requestSummary' }
