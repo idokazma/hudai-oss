@@ -37,6 +37,25 @@ export interface SwarmSnapshot {
   lastEventAt?: number;
   isAttached: boolean;
   lastIntent?: string;
+  // Rich fields from SessionMonitor (Phase 4)
+  /** Agent activity: working, waiting_input, waiting_permission, waiting_answer */
+  activity?: AgentActivity;
+  /** Activity detail (tool name, question text, etc.) */
+  activityDetail?: string;
+  /** Current file being worked on */
+  currentFile?: string;
+  /** LLM model in use */
+  model?: string;
+  /** Total tokens consumed */
+  tokensUsed?: number;
+  /** Number of conversation turns */
+  turnCount?: number;
+  /** Number of tool invocations */
+  toolCount?: number;
+  /** tmux target for switching (null for non-tmux sessions) */
+  tmuxTarget?: string;
+  /** How the session was discovered */
+  source?: 'tmux' | 'jsonl';
 }
 
 // Server -> Client

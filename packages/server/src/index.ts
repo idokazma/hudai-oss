@@ -25,7 +25,8 @@ import { getDb } from './persistence/db.js';
 import { loadSecrets, saveSecrets, getSecret, getKeysStatus } from './persistence/secrets.js';
 import { GraphBuilder } from './graph/graph-builder.js';
 import { TranscriptWatcher } from './transcript/transcript-watcher.js';
-import { analyzePaneContent } from './parser/pane-analyzer.js';
+// DISABLED: pane-analyzer replaced by SessionMonitor (JSONL-based status detection)
+// import { analyzePaneContent } from './parser/pane-analyzer.js';
 import { HooksHandler } from './hooks/hooks-handler.js';
 import type { ActivityUpdate } from './hooks/hooks-handler.js';
 import { AgentHost } from './agent/agent-host.js';
@@ -494,110 +495,24 @@ async function attachToPane(tmuxTarget: string) {
     lastPaneContent = content;
     broadcast({ kind: 'pane.content', content, caret });
 
-    // ── When hooks are active, skip pane-based activity detection ──
-    // Activity state comes from Claude Code's Notification hooks (POST /api/hooks/notification).
-    // Pane content is only used for PanePreview (live terminal display).
-    if (hooksActive) {
-      // Still do stale detection as a safety net — hooks should fire idle_prompt,
-      // but if they don't (e.g. hook misconfigured), fall back after 120s
-      const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
-      const hookStaleSec = (Date.now() - lastHookActivityAt) / 1000;
-      if (
-        staleSec >= 120 &&
-        hookStaleSec >= 120 &&
-        !idleNotified &&
-        sessionState.agentActivity === 'working'
-      ) {
-        idleNotified = true;
-        applyActivityUpdate({
-          activity: 'waiting_input',
-          detail: 'Agent appears idle (no output or hooks for 2 min)',
-        });
-      }
-      return;
-    }
+    // ── Activity detection is now handled by SessionMonitor (JSONL) or hooks ──
+    // pane-analyzer (analyzePaneContent) is DISABLED — kept in codebase but not called.
+    // Pane content is only used for:
+    //   1. PanePreview (live terminal display) — broadcast above
+    //   2. Stale detection safety net — if everything else fails, detect idle after 2 min
 
-    // ── When SessionMonitor is active, skip pane-based activity detection ──
-    // JSONL-based status detection is more reliable than regex on terminal output.
-    // Pane-analyzer only runs as a tertiary fallback when neither hooks nor SessionMonitor are active.
-    if (sessionMonitor?.active) {
-      // Still do stale detection as safety net
-      const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
-      if (staleSec >= 120 && !idleNotified && sessionState.agentActivity === 'working') {
-        idleNotified = true;
-        applyActivityUpdate({
-          activity: 'waiting_input',
-          detail: 'Agent appears idle (no output for 2 min)',
-        });
-      }
-      return;
-    }
-
-    // ── Tertiary fallback: pane-based activity detection (when neither hooks nor SessionMonitor active) ──
     const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
-    const analysis = analyzePaneContent(content);
+    const hookStaleSec = hooksActive ? (Date.now() - lastHookActivityAt) / 1000 : Infinity;
     if (
       staleSec >= 120 &&
+      hookStaleSec >= 120 &&
       !idleNotified &&
-      analysis.activity === 'working'
+      sessionState.agentActivity === 'working'
     ) {
       idleNotified = true;
-      broadcast({
-        kind: 'insight.notification',
-        notification: {
-          id: `idle-${Date.now()}`,
-          text: 'Agent finished — waiting for next command',
-          severity: 'info',
-          triggeredBy: 'activity.idle',
-          timestamp: Date.now(),
-        },
-      });
-      updateSessionState({
-        agentActivity: 'waiting_input',
-        agentActivityDetail: 'Agent appears idle (no output for 2 min)',
-      });
-      return;
-    }
-
-    const activityChanged = analysis.activity !== sessionState.agentActivity;
-    const detailChanged = analysis.detail !== sessionState.agentActivityDetail;
-
-    if (activityChanged && sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
-      idleNotified = false;
-    }
-
-    if (activityChanged && insightEngine) {
-      insightEngine.activityChanged(sessionState.agentActivity, analysis.activity);
-      if (commanderChat) {
-        for (const msg of commanderChat.flush()) {
-          broadcast(msg);
-        }
-      }
-    }
-
-    if (activityChanged || (detailChanged && (analysis.activity === 'waiting_answer' || analysis.activity === 'waiting_permission'))) {
-      if (analysis.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
-        idleNotified = true;
-      }
-
-      if (analysis.activity === 'waiting_permission' && sessionState.agentActivity !== 'waiting_permission') {
-        handleEvent({
-          id: crypto.randomUUID(),
-          sessionId: sessionState.sessionId,
-          timestamp: Date.now(),
-          category: 'control',
-          type: 'permission.prompt',
-          source: 'tmux',
-          data: {
-            tool: analysis.detail?.split(':')[0]?.trim() || 'Unknown',
-            command: analysis.detail || 'Permission requested',
-          },
-        } as AVPEvent);
-      }
-      updateSessionState({
-        agentActivity: analysis.activity,
-        agentActivityDetail: analysis.detail,
-        agentActivityOptions: analysis.options,
+      applyActivityUpdate({
+        activity: 'waiting_input',
+        detail: 'Agent appears idle (no output for 2 min)',
       });
     }
   });
@@ -1855,7 +1770,52 @@ fastify.register(async function (app) {
           }
 
           case 'swarm.status': {
+            // Merge SwarmRegistry (tmux-based, DB-enriched) with SwarmService (JSONL-discovered)
             const snapshots = swarmRegistry.getSnapshots();
+            const swarmAgents = swarmService.getSwarmStatus();
+
+            // Enrich snapshots with SwarmService data
+            for (const snap of snapshots) {
+              const agent = swarmAgents.find((a) =>
+                a.sessionId === snap.sessionId || a.tmuxTarget === snap.projectPath
+              );
+              if (agent) {
+                snap.activity = agent.status.activity;
+                snap.activityDetail = agent.status.detail;
+                snap.currentFile = agent.status.currentFile;
+                snap.model = agent.metrics.model;
+                snap.tokensUsed = agent.metrics.tokensUsed;
+                snap.turnCount = agent.metrics.turnCount;
+                snap.toolCount = agent.metrics.toolCount;
+                snap.tmuxTarget = agent.tmuxTarget;
+                snap.source = agent.source;
+              }
+            }
+
+            // Add JSONL-only sessions (non-tmux) not already in snapshots
+            for (const agent of swarmAgents) {
+              if (!agent.tmuxTarget && !snapshots.some((s) => s.sessionId === agent.sessionId)) {
+                snapshots.push({
+                  sessionId: agent.sessionId,
+                  projectPath: agent.projectPath,
+                  projectName: agent.projectName,
+                  startedAt: 0,
+                  status: agent.status.activity,
+                  eventCount: 0,
+                  lastEventAt: agent.metrics.lastActivity || undefined,
+                  isAttached: agent.isCurrentSession,
+                  activity: agent.status.activity,
+                  activityDetail: agent.status.detail,
+                  currentFile: agent.status.currentFile,
+                  model: agent.metrics.model,
+                  tokensUsed: agent.metrics.tokensUsed,
+                  turnCount: agent.metrics.turnCount,
+                  toolCount: agent.metrics.toolCount,
+                  source: 'jsonl',
+                });
+              }
+            }
+
             const resp: ServerMessage = { kind: 'swarm.status', sessions: snapshots };
             socket.send(JSON.stringify(resp));
             break;
@@ -2137,6 +2097,87 @@ fastify.post('/api/hooks/working', async (request, reply) => {
     sessionMonitor.applyHookUpdate({ activity: 'working' });
   }
   return { ok: true };
+});
+
+// ── Hooks auto-install endpoints ────────────────────────────────────
+import { homedir } from 'node:os';
+
+const CLAUDE_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
+const HUDAI_HOOK_URL = `http://localhost:${WS_PORT}/api/hooks/notification`;
+
+/** Check if Hudai notification hooks are installed in Claude Code settings */
+async function checkHooksInstalled(): Promise<{ installed: boolean; hooksActive: boolean }> {
+  try {
+    const content = await readFile(CLAUDE_SETTINGS_PATH, 'utf-8');
+    const settings = JSON.parse(content);
+    const hooks = settings?.hooks?.Notification;
+    if (!Array.isArray(hooks)) return { installed: false, hooksActive };
+    const hasHudai = hooks.some((h: any) => {
+      const cmd = h.command || '';
+      const url = h.url || '';
+      return cmd.includes('localhost') && cmd.includes('/api/hooks/') ||
+             url.includes('localhost') && url.includes('/api/hooks/');
+    });
+    return { installed: hasHudai, hooksActive };
+  } catch {
+    return { installed: false, hooksActive };
+  }
+}
+
+fastify.get('/api/hooks/status', async () => {
+  return checkHooksInstalled();
+});
+
+fastify.post('/api/hooks/install', async () => {
+  let settings: Record<string, any> = {};
+  try {
+    const content = await readFile(CLAUDE_SETTINGS_PATH, 'utf-8');
+    settings = JSON.parse(content);
+  } catch {
+    // File doesn't exist or isn't valid JSON — start fresh
+  }
+
+  if (!settings.hooks) settings.hooks = {};
+  if (!Array.isArray(settings.hooks.Notification)) settings.hooks.Notification = [];
+
+  // Check if already installed
+  const existing = settings.hooks.Notification.some((h: any) => {
+    const cmd = h.command || '';
+    return cmd.includes('/api/hooks/notification');
+  });
+
+  if (!existing) {
+    settings.hooks.Notification.push({
+      matcher: '',
+      command: `curl -s -X POST ${HUDAI_HOOK_URL} -H 'Content-Type: application/json' -d '$CLAUDE_NOTIFICATION'`,
+    });
+  }
+
+  await writeFile(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
+  return { ok: true, installed: true };
+});
+
+fastify.post('/api/hooks/uninstall', async () => {
+  try {
+    const content = await readFile(CLAUDE_SETTINGS_PATH, 'utf-8');
+    const settings = JSON.parse(content);
+    if (Array.isArray(settings?.hooks?.Notification)) {
+      settings.hooks.Notification = settings.hooks.Notification.filter((h: any) => {
+        const cmd = h.command || '';
+        return !cmd.includes('/api/hooks/notification');
+      });
+      if (settings.hooks.Notification.length === 0) {
+        delete settings.hooks.Notification;
+      }
+      if (Object.keys(settings.hooks).length === 0) {
+        delete settings.hooks;
+      }
+    }
+    await writeFile(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
+  } catch {
+    // Settings file doesn't exist — nothing to uninstall
+  }
+  return { ok: true, installed: false };
 });
 
 // Serve pre-built client files (production mode)
