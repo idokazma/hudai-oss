@@ -119,7 +119,7 @@ let commanderChat = llmProvider && insightEngine
       () => sessionState,
       () => insightEngine!.intentHistory,
       () => graphBuilder.getGraph().edges,
-      () => swarmRegistry.buildSwarmSummary(),
+      () => swarmService.buildSwarmSummary(),
       () => sessionState.sessionId ? eventStore.getBySession(sessionState.sessionId) : [],
     )
   : null;
@@ -1673,7 +1673,7 @@ fastify.register(async function (app) {
                   () => sessionState,
                   () => insightEngine!.intentHistory,
                   () => graphBuilder.getGraph().edges,
-                  () => swarmRegistry.buildSwarmSummary(),
+                  () => swarmService.buildSwarmSummary(),
                   () => sessionState.sessionId ? eventStore.getBySession(sessionState.sessionId) : [],
                 );
                 // Restore verbosity + scope + prompt settings
