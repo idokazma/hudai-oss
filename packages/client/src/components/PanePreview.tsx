@@ -128,8 +128,6 @@ export function PanePreview() {
     // Override wheel events so they always scroll the xterm.js buffer
     // instead of being forwarded as mouse reports to tmux/Claude Code
     term.attachCustomWheelEventHandler((ev) => {
-      // deltaY > 0 = scroll down, deltaY < 0 = scroll up
-      // Increase scroll speed for smoother navigation
       const lines = ev.deltaY > 0 ? 5 : -5;
       term.scrollLines(lines);
       return false;
@@ -251,14 +249,10 @@ export function PanePreview() {
           ref={wrapperRef}
           style={{
             flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'flex-start',
-            overflowY: 'auto',
-            overflowX: 'hidden',
+            overflow: 'hidden',
           }}
         >
-          <div ref={containerRef} style={{ flexShrink: 0 }} />
+          <div ref={containerRef} style={{ height: '100%' }} />
         </div>
       )}
       {(tmuxTarget || sessionMode === 'stream') && <CommandOverlay />}

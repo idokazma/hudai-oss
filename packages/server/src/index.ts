@@ -2161,9 +2161,13 @@ fastify.register(async function (app) {
     const sessionName = target.split(':')[0];
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" window-size latest`, { stdio: 'ignore' }); } catch {}
 
-    // Allow alternate screen — Claude Code's TUI uses it for clean redraws.
-    // Disabling it causes flicker because TUI cursor-movement/clear operations
-    // happen in the normal buffer and are visible as text pushing then snapping back.
+    // Disable alternate screen so all output stays in the normal buffer with scrollback.
+    // Without this, Claude Code's TUI enters alternate screen and scrollback is lost.
+    // PTY output batching (16ms) handles flicker reduction instead.
+    try { execSync(`${tmuxBin} set-option -t "${sessionName}" -w alternate-screen off`, { stdio: 'ignore' }); } catch {}
+
+    // Ensure tmux keeps enough scrollback for history injection
+    try { execSync(`${tmuxBin} set-option -t "${sessionName}" history-limit 5000`, { stdio: 'ignore' }); } catch {}
 
     // Hide tmux status bar — Hudai provides its own chrome
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" status off`, { stdio: 'ignore' }); } catch {}
@@ -2172,7 +2176,7 @@ fastify.register(async function (app) {
     // Uses -e for escape sequences (colors), -J to join wrapped lines, \r\n for xterm.
     try {
       const history = execSync(
-        `${tmuxBin} capture-pane -t "${target}" -e -J -p -S -500`,
+        `${tmuxBin} capture-pane -t "${target}" -e -J -p -S -2000`,
         { encoding: 'utf-8', maxBuffer: 1024 * 1024 }
       );
       if (history && socket.readyState === 1) {
@@ -2190,11 +2194,9 @@ fastify.register(async function (app) {
       env: { ...process.env, TERM: 'xterm-256color' },
     });
 
-    // Strip mouse tracking escapes only — these cause wheel events to be
-    // consumed by mouse reporting instead of scrolling xterm.js.
-    // Alternate screen escapes (47, 1047, 1049) are kept so Claude Code's
-    // TUI can redraw cleanly without flickering in the normal buffer.
-    const STRIP_MOUSE_RE = /\x1b\[\?(9|1000|1002|1003|1004|1005|1006|1015)[hl]/g;
+    // Strip alternate screen + mouse tracking escapes so xterm stays in the
+    // normal buffer (preserving scrollback) and wheel events scroll the buffer.
+    const STRIP_RE = /\x1b\[\?(9|47|1000|1002|1003|1004|1005|1006|1015|1047|1049)[hl]/g;
 
     // Batch PTY output to reduce flicker. Claude Code's TUI sends screen
     // updates across multiple chunks (e.g. diff content, then cursor reset).
@@ -2211,7 +2213,7 @@ fastify.register(async function (app) {
     };
 
     ptyProcess.onData((data: string) => {
-      ptyBuffer += data.replace(STRIP_MOUSE_RE, '');
+      ptyBuffer += data.replace(STRIP_RE, '');
       if (!ptyFlushTimer) {
         ptyFlushTimer = setTimeout(flushPty, 16);
       }
