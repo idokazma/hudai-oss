@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { CurrentActionWidget } from './CurrentActionWidget.js';
 import { CommanderChat } from './CommanderChat.js';
-import { HumanShell } from '../Mobile/views/HumanShell.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
 
-type RightTab = 'activity' | 'chat' | 'session';
+type RightTab = 'activity' | 'chat';
 
 export function RightPanel() {
   const [activeTab, setActiveTab] = useState<RightTab>('chat');
@@ -24,7 +23,7 @@ export function RightPanel() {
         borderBottom: `1px solid ${colors.border.subtle}`,
         flexShrink: 0,
       }}>
-        {(['chat', 'session', 'activity'] as const).map((tab) => (
+        {(['chat', 'activity'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -42,14 +41,14 @@ export function RightPanel() {
               letterSpacing: 1,
             }}
           >
-            {tab === 'activity' ? 'Activity' : tab === 'session' ? 'Session' : 'Chat'}
+            {tab === 'activity' ? 'Activity' : 'Chat'}
           </button>
         ))}
       </div>
 
       {/* Activity Feed or Chat — takes full remaining height */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        {activeTab === 'activity' ? <CurrentActionWidget /> : activeTab === 'session' ? <HumanShell /> : <CommanderChat />}
+        {activeTab === 'activity' ? <CurrentActionWidget /> : <CommanderChat />}
       </div>
     </div>
   );

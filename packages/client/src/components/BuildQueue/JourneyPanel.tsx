@@ -1,216 +1,536 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { useJourneyStore, type JourneyEntry } from '../../stores/journey-store.js';
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { useThreadStore } from '../../stores/thread-store.js';
 import { useEventStore } from '../../stores/event-store.js';
 import { useGraphStore } from '../../stores/graph-store.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
+import type { ThreadSummary, ThreadPhase } from '@hudai/shared';
 
-const TYPE_CONFIG: Record<JourneyEntry['type'], { icon: string; color: string; label: string }> = {
-  file:    { icon: '◆', color: colors.accent.primary, label: 'File' },
-  shell:   { icon: '$', color: colors.action.bash, label: 'Shell' },
-  search:  { icon: '⌕', color: '#8b5cf6', label: 'Search' },
-  think:   { icon: '~', color: colors.text.muted, label: 'Think' },
-  test:    { icon: '⚑', color: '#f59e0b', label: 'Test' },
-  plan:    { icon: '☰', color: colors.status.successLight, label: 'Plan' },
-  control: { icon: '·', color: colors.text.dimmed, label: '' },
+const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+
+/** Strip XML-like tags, tool IDs, and other artifacts from prompt text */
+function stripTags(text: string): string {
+  const cleaned = text
+    .replace(/<[^>]*>[\s\S]*?<\/[^>]*>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/toolu_[a-zA-Z0-9_-]+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  // Filter out non-human content
+  if (cleaned.length <= 3) return '';
+  if (/^caveat:/i.test(cleaned)) return '';
+  if (/^\/\w+/.test(cleaned)) return '';
+  if (/^[a-z0-9]{8,}$/i.test(cleaned)) return ''; // bare IDs
+  return cleaned;
+}
+
+const PHASE_LABELS: Record<ThreadPhase, string> = {
+  investigating: 'Investigating',
+  implementing: 'Implementing',
+  testing: 'Testing',
+  done: 'Done',
+  error: 'Error',
+};
+
+const PHASE_COLORS: Record<ThreadPhase, string> = {
+  investigating: colors.action.search,
+  implementing: colors.action.edit,
+  testing: colors.action.test,
+  done: colors.status.successLight,
+  error: colors.status.errorLight,
+};
+
+const PHASE_ORDER: ThreadPhase[] = ['investigating', 'implementing', 'testing', 'done'];
+
+const FILE_ACTION_PRIORITY: Record<string, number> = {
+  'file.read': 1, 'search.grep': 1, 'search.glob': 1,
+  'file.edit': 3, 'file.create': 4, 'file.delete': 5,
+};
+
+const FILE_ACTION_COLORS: Record<string, string> = {
+  read: colors.action.read,
+  edit: colors.action.edit,
+  create: colors.action.create,
+  delete: colors.action.delete,
 };
 
 function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function JourneyNode({
-  entry,
+function formatDuration(startMs: number, endMs: number | null): string {
+  const end = endMs ?? Date.now();
+  const secs = Math.round((end - startMs) / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const remSecs = secs % 60;
+  return remSecs > 0 ? `${mins}m ${remSecs}s` : `${mins}m`;
+}
+
+interface FileTouch {
+  path: string;
+  fullPath: string;
+  action: 'read' | 'edit' | 'create' | 'delete';
+  count: number;
+}
+
+function buildFileTouches(events: any[], startedAt: number, nextStart: number): FileTouch[] {
+  const fileMap = new Map<string, { action: string; priority: number; count: number; fullPath: string }>();
+
+  for (const ev of events) {
+    if (ev.timestamp < startedAt || ev.timestamp >= nextStart) continue;
+    const priority = FILE_ACTION_PRIORITY[ev.type];
+    if (priority === undefined) continue;
+
+    const path: string = (ev as any).data?.path;
+    if (!path) continue;
+
+    const existing = fileMap.get(path);
+    if (!existing || priority > existing.priority) {
+      fileMap.set(path, {
+        action: ev.type.startsWith('search') ? 'read' : ev.type.split('.')[1],
+        priority,
+        count: (existing?.count || 0) + 1,
+        fullPath: path,
+      });
+    } else {
+      existing.count++;
+    }
+  }
+
+  return Array.from(fileMap.entries())
+    .map(([, v]) => ({
+      path: v.fullPath.split('/').pop() || v.fullPath,
+      fullPath: v.fullPath,
+      action: v.action as FileTouch['action'],
+      count: v.count,
+    }))
+    .sort((a, b) => {
+      const ap = { delete: 4, create: 3, edit: 2, read: 1 }[a.action] || 0;
+      const bp = { delete: 4, create: 3, edit: 2, read: 1 }[b.action] || 0;
+      return bp - ap;
+    });
+}
+
+/** Build client-side threads from events when server threads are not available */
+function buildClientThreads(events: any[]): ThreadSummary[] {
+  const latestTs = events.length > 0 ? events[events.length - 1].timestamp : Date.now();
+  const cutoff = latestTs - TWELVE_HOURS;
+  const threads: ThreadSummary[] = [];
+  let current: ThreadSummary | null = null;
+
+  for (const ev of events) {
+    if (ev.timestamp < cutoff) continue;
+
+    if (ev.type === 'task.start') {
+      if (current && current.phase !== 'done' && current.phase !== 'error') {
+        current.phase = 'done';
+        current.completedAt = ev.timestamp;
+        current.outcome = { type: 'success' };
+      }
+
+      const prompt = stripTags((ev.data?.prompt || '').trim());
+      if (!prompt) continue;
+
+      current = {
+        threadId: ev.id,
+        sessionId: ev.sessionId,
+        prompt: prompt.slice(0, 500),
+        startedAt: ev.timestamp,
+        completedAt: null,
+        phase: 'investigating',
+        summary: null,
+        bullets: null,
+        outcome: { type: 'working' },
+        eventCount: 1,
+      };
+      threads.push(current);
+      continue;
+    }
+
+    if (!current) continue;
+    current.eventCount++;
+
+    if (['file.edit', 'file.create', 'file.delete'].includes(ev.type)) {
+      if (['investigating'].includes(current.phase)) current.phase = 'implementing';
+    } else if (['test.run', 'test.result', 'shell.run'].includes(ev.type)) {
+      if (['investigating', 'implementing'].includes(current.phase)) current.phase = 'testing';
+    } else if (ev.type === 'agent.error') {
+      current.phase = 'error';
+      current.outcome = { type: 'error' };
+    }
+  }
+
+  return threads;
+}
+
+function PhasePipeline({ phase }: { phase: ThreadPhase }) {
+  const activeIdx = phase === 'error' ? -1 : PHASE_ORDER.indexOf(phase);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+      {PHASE_ORDER.slice(0, 3).map((p, i) => {
+        const reached = phase === 'error' ? false : i <= activeIdx;
+        const isCurrent = phase !== 'done' && phase !== 'error' && i === activeIdx;
+        const color = reached ? PHASE_COLORS[p] : colors.text.dimmed;
+        return (
+          <div key={p} style={{ display: 'flex', alignItems: 'center' }}>
+            {i > 0 && <div style={{ width: 12, height: 1, background: reached ? color : alpha(colors.text.dimmed, 0.3) }} />}
+            <div style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: reached ? color : 'transparent',
+              border: `1.5px solid ${color}`,
+              boxShadow: isCurrent ? `0 0 6px ${color}` : 'none',
+            }} title={PHASE_LABELS[p]} />
+          </div>
+        );
+      })}
+      <span style={{
+        marginLeft: 6, fontSize: 8, fontFamily: fonts.mono,
+        color: PHASE_COLORS[phase], textTransform: 'uppercase',
+        letterSpacing: '0.04em', fontWeight: 600,
+      }}>
+        {PHASE_LABELS[phase]}
+      </span>
+    </div>
+  );
+}
+
+function JourneyTaskCard({
+  thread,
+  isActive,
   isSelected,
-  isLast,
-  onSelect,
-  onHover,
+  files,
+  onHoverStart,
+  onHoverEnd,
+  onClick,
 }: {
-  entry: JourneyEntry;
+  thread: ThreadSummary;
+  isActive: boolean;
   isSelected: boolean;
-  isLast: boolean;
-  onSelect: () => void;
-  onHover: (nodeId: string | null) => void;
+  files: FileTouch[];
+  onHoverStart: () => void;
+  onHoverEnd: () => void;
+  onClick: () => void;
 }) {
-  const cfg = TYPE_CONFIG[entry.type];
-  const nodeSize = entry.type === 'file' ? 10 : entry.type === 'test' ? 10 : 8;
-  const hasMultipleVisits = entry.visits > 1;
+  const [expanded, setExpanded] = useState(false);
+  const isComplete = thread.phase === 'done' || thread.phase === 'error';
+
+  const borderColor = isSelected
+    ? colors.accent.blue
+    : isActive
+      ? colors.accent.primary
+      : isComplete
+        ? (thread.phase === 'error' ? colors.status.error : colors.status.success)
+        : colors.text.dimmed;
+
+  const edits = files.filter(f => f.action === 'edit' || f.action === 'create').length;
+  const reads = files.filter(f => f.action === 'read').length;
 
   return (
-    <button
-      onClick={onSelect}
-      onMouseEnter={() => entry.nodeId && onHover(entry.nodeId)}
-      onMouseLeave={() => onHover(null)}
+    <div
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
       style={{
-        display: 'flex',
-        gap: 0,
-        padding: 0,
-        background: 'none',
-        border: 'none',
-        cursor: 'pointer',
-        textAlign: 'left',
-        width: '100%',
+        borderLeft: `2px solid ${borderColor}`,
+        marginBottom: 4,
+        background: isSelected
+          ? alpha(colors.accent.blue, 0.1)
+          : isActive ? alpha(colors.accent.primary, 0.06) : alpha(colors.bg.card, 0.5),
+        borderRadius: 3,
+        overflow: 'hidden',
+        transition: 'background 0.15s ease',
       }}
     >
-      {/* Timeline rail */}
-      <div style={{
-        width: 32,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        flexShrink: 0,
-      }}>
-        {/* Node dot */}
-        <div style={{
-          width: nodeSize,
-          height: nodeSize,
-          borderRadius: '50%',
-          background: isSelected ? cfg.color : alpha(cfg.color, 0.7),
-          border: `2px solid ${cfg.color}`,
-          boxShadow: isSelected ? `0 0 8px ${alpha(cfg.color, 0.5)}` : 'none',
-          flexShrink: 0,
-          position: 'relative',
-          zIndex: 1,
+      {/* Header */}
+      <div
+        onClick={() => { setExpanded(!expanded); onClick(); }}
+        style={{
+          padding: '5px 8px 3px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          gap: 6,
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 5, flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 8, color: colors.text.dimmed, flexShrink: 0, marginTop: 2 }}>
+            {expanded ? '▾' : '▸'}
+          </span>
+          <span style={{
+            fontFamily: fonts.mono, fontSize: 10, fontWeight: 600,
+            color: colors.text.primary, wordBreak: 'break-word',
+            flex: 1, lineHeight: 1.4,
+          }}>
+            {(() => { const p = stripTags(thread.prompt); return p.length > 80 ? p.slice(0, 80) + '...' : p; })()}
+          </span>
+        </div>
+        <span style={{
+          fontSize: 8, fontFamily: fonts.mono,
+          color: colors.text.dimmed, whiteSpace: 'nowrap', flexShrink: 0,
         }}>
-          {hasMultipleVisits && (
+          {formatTime(thread.startedAt)}
+        </span>
+      </div>
+
+      {/* Collapsed: phase + file counts */}
+      {!expanded && (
+        <div style={{
+          padding: '1px 8px 4px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}>
+          <PhasePipeline phase={thread.phase} />
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {edits > 0 && (
+              <span style={{ fontSize: 7, fontFamily: fonts.mono, color: colors.action.edit }}>
+                {edits} edited
+              </span>
+            )}
+            {reads > 0 && (
+              <span style={{ fontSize: 7, fontFamily: fonts.mono, color: colors.action.read }}>
+                {reads} read
+              </span>
+            )}
+            <span style={{ fontSize: 7, fontFamily: fonts.mono, color: colors.text.dimmed }}>
+              {formatDuration(thread.startedAt, thread.completedAt)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Expanded */}
+      {expanded && (
+        <div style={{ padding: '0 8px 5px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0 4px' }}>
+            <PhasePipeline phase={thread.phase} />
+            <span style={{ fontSize: 8, fontFamily: fonts.mono, color: colors.text.dimmed }}>
+              {formatDuration(thread.startedAt, thread.completedAt)}
+            </span>
+          </div>
+
+          {/* Summary */}
+          {thread.summary && (
             <div style={{
-              position: 'absolute',
-              top: -6,
-              right: -8,
-              fontSize: 8,
-              fontFamily: fonts.mono,
-              fontWeight: 700,
-              color: cfg.color,
-              background: colors.bg.primary,
-              padding: '0 2px',
-              borderRadius: 3,
-              lineHeight: 1.2,
+              fontFamily: fonts.mono, fontSize: 9, color: colors.text.secondary,
+              lineHeight: 1.4, padding: '0 0 3px 14px', fontStyle: 'italic',
             }}>
-              ×{entry.visits}
+              {thread.summary}
             </div>
           )}
-        </div>
-        {/* Connecting line */}
-        {!isLast && (
-          <div style={{
-            width: 2,
-            flex: 1,
-            minHeight: 12,
-            background: `linear-gradient(to bottom, ${alpha(cfg.color, 0.3)}, ${alpha(cfg.color, 0.08)})`,
-          }} />
-        )}
-      </div>
 
-      {/* Content */}
-      <div style={{
-        flex: 1,
-        minWidth: 0,
-        paddingBottom: isLast ? 0 : 10,
-        paddingTop: 0,
-        marginTop: -2,
-      }}>
-        {/* Label row */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-        }}>
-          <span style={{
-            fontSize: 12,
-            fontFamily: fonts.mono,
-            fontWeight: 600,
-            color: isSelected ? colors.text.primary : colors.text.secondary,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            flex: 1,
-          }}>
-            {entry.label}
-          </span>
-          <span style={{
-            fontSize: 9,
-            fontFamily: fonts.mono,
-            color: colors.text.dimmed,
-            flexShrink: 0,
-          }}>
-            {formatTime(entry.timestamp)}
-          </span>
-        </div>
+          {/* Bullets */}
+          {thread.bullets && thread.bullets.length > 0 && (
+            <div style={{ padding: '2px 0 3px 14px' }}>
+              {thread.bullets.map((b, i) => (
+                <div key={i} style={{
+                  fontFamily: fonts.mono, fontSize: 9, color: colors.text.secondary,
+                  lineHeight: 1.5, display: 'flex', gap: 4,
+                }}>
+                  <span style={{ color: colors.text.dimmed, flexShrink: 0 }}>-</span>
+                  <span>{b}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
-        {/* Action badges */}
-        {entry.actions.length > 0 && (
-          <div style={{
-            display: 'flex',
-            gap: 3,
-            marginTop: 3,
-          }}>
-            {entry.actions.map((a, i) => (
-              <span
-                key={i}
-                style={{
-                  fontSize: 9,
-                  fontFamily: fonts.mono,
-                  fontWeight: 700,
-                  padding: '1px 5px',
-                  borderRadius: 3,
-                  background: alpha(cfg.color, 0.15),
-                  color: cfg.color,
-                  letterSpacing: 0.5,
-                }}
-              >
-                {a}
-              </span>
-            ))}
+          {/* File touches */}
+          {files.length > 0 && (
+            <div style={{ padding: '3px 0 2px', display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+              {files.slice(0, 12).map((f, i) => (
+                <span
+                  key={i}
+                  title={`${f.fullPath} (${f.action} x${f.count})`}
+                  style={{
+                    fontSize: 7, fontFamily: fonts.mono,
+                    color: FILE_ACTION_COLORS[f.action] || colors.text.dimmed,
+                    background: alpha(FILE_ACTION_COLORS[f.action] || colors.text.dimmed, 0.12),
+                    padding: '1px 4px', borderRadius: 2,
+                    borderLeft: `2px solid ${FILE_ACTION_COLORS[f.action] || colors.text.dimmed}`,
+                    whiteSpace: 'nowrap', maxWidth: 90,
+                    overflow: 'hidden', textOverflow: 'ellipsis',
+                  }}
+                >
+                  {f.path}
+                </span>
+              ))}
+              {files.length > 12 && (
+                <span style={{ fontSize: 7, fontFamily: fonts.mono, color: colors.text.dimmed }}>
+                  +{files.length - 12}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Event count */}
+          <div style={{ fontSize: 8, fontFamily: fonts.mono, color: colors.text.dimmed, marginTop: 2 }}>
+            {thread.eventCount} events
           </div>
-        )}
-
-        {/* Detail / path for non-file */}
-        {entry.detail && entry.type !== 'file' && (
-          <div style={{
-            marginTop: 2,
-            fontSize: 10,
-            fontFamily: fonts.mono,
-            color: colors.text.dimmed,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}>
-            {entry.detail}
-          </div>
-        )}
-      </div>
-    </button>
+        </div>
+      )}
+    </div>
   );
 }
 
 export function JourneyPanel() {
-  const entries = useJourneyStore((s) => s.entries);
-  const selectedEntryId = useJourneyStore((s) => s.selectedEntryId);
-  const selectEntry = useJourneyStore((s) => s.selectEntry);
-  const processEvents = useJourneyStore((s) => s.processEvents);
+  const serverThreads = useThreadStore((s) => s.threads);
   const events = useEventStore((s) => s.events);
-  const setHighlightNode = useGraphStore((s) => s.setHighlightNode);
+  const setJourney = useGraphStore((s) => s.setJourney);
+  const clearJourney = useGraphStore((s) => s.clearJourney);
+  const pathToId = useGraphStore((s) => s.pathToId);
+  const nodeMap = useGraphStore((s) => s.nodeMap);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const autoExpandedGroupsRef = useRef<Set<string>>(new Set());
 
-  const handleHover = useCallback((nodeId: string | null) => {
-    setHighlightNode(nodeId);
-  }, [setHighlightNode]);
+  const threads = useMemo(() => {
+    if (serverThreads.length > 0) return serverThreads;
+    return buildClientThreads(events);
+  }, [serverThreads, events]);
 
-  useEffect(() => {
-    processEvents(events);
-  }, [events, processEvents]);
+  // Build per-thread file touches
+  const threadFiles = useMemo(() => {
+    const map = new Map<string, FileTouch[]>();
+    for (let i = 0; i < threads.length; i++) {
+      const thread = threads[i];
+      const nextStart = i + 1 < threads.length ? threads[i + 1].startedAt : Infinity;
+      map.set(thread.threadId, buildFileTouches(events, thread.startedAt, nextStart));
+    }
+    return map;
+  }, [threads, events]);
 
+  // Auto-scroll
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop = 0;
     }
-  }, [entries.length]);
+  }, [threads.length]);
 
-  // Compute type summary
-  const typeCounts = new Map<JourneyEntry['type'], number>();
-  for (const e of entries) {
-    typeCounts.set(e.type, (typeCounts.get(e.type) ?? 0) + 1);
-  }
+  // Clear highlights on unmount
+  useEffect(() => {
+    return () => {
+      clearJourney();
+      // Collapse auto-expanded groups on unmount
+      if (autoExpandedGroupsRef.current.size > 0) {
+        const { expandedGroups } = useGraphStore.getState();
+        const next = new Set(expandedGroups);
+        for (const g of autoExpandedGroupsRef.current) next.delete(g);
+        autoExpandedGroupsRef.current.clear();
+        useGraphStore.setState({ expandedGroups: next });
+      }
+    };
+  }, [clearJourney]);
+
+  const collapseAutoExpanded = useCallback(() => {
+    if (autoExpandedGroupsRef.current.size === 0) return;
+    const { expandedGroups } = useGraphStore.getState();
+    const next = new Set(expandedGroups);
+    for (const g of autoExpandedGroupsRef.current) next.delete(g);
+    autoExpandedGroupsRef.current.clear();
+    useGraphStore.setState({ expandedGroups: next });
+  }, []);
+
+  const highlightTask = useCallback((threadId: string) => {
+    const files = threadFiles.get(threadId);
+    if (!files || files.length === 0) {
+      console.log('[JourneyPanel] no files for thread', threadId);
+      return;
+    }
+
+    // Collapse any previously auto-expanded groups first
+    collapseAutoExpanded();
+
+    const highlights = new Map<string, 'read' | 'edit' | 'create' | 'delete'>();
+    const trail: string[] = [];
+
+    // Use fresh store state to avoid stale closures
+    const { nodeMap: freshNodeMap, pathToId: freshPathToId, expandedGroups } = useGraphStore.getState();
+    const groupsToExpand = new Set<string>();
+
+    console.log('[JourneyPanel] highlightTask', threadId, 'files:', files.length, 'nodeMap size:', freshNodeMap.size, 'pathToId size:', freshPathToId.size);
+
+    for (const f of files) {
+      const nodeId = freshNodeMap.has(f.fullPath) ? f.fullPath : freshPathToId.get(f.fullPath);
+      console.log('[JourneyPanel] file:', f.fullPath, 'action:', f.action, 'nodeId:', nodeId);
+      if (nodeId) {
+        highlights.set(nodeId, f.action);
+        trail.push(nodeId);
+        // Check if this file's group needs expanding
+        const fileNode = freshNodeMap.get(nodeId);
+        if (fileNode) {
+          const parts = fileNode.group.split('/');
+          let current = '';
+          for (let i = 0; i < parts.length; i++) {
+            current = i === 0 ? parts[i] : current + '/' + parts[i];
+            if (!expandedGroups.has(current)) {
+              groupsToExpand.add(current);
+            }
+          }
+        }
+      }
+    }
+
+    // Auto-expand groups so file nodes are visible on the map
+    if (groupsToExpand.size > 0) {
+      const next = new Set(expandedGroups);
+      for (const g of groupsToExpand) {
+        next.add(g);
+        autoExpandedGroupsRef.current.add(g);
+      }
+      useGraphStore.setState({ expandedGroups: next });
+    }
+
+    if (highlights.size > 0) {
+      setJourney(trail, highlights);
+    }
+  }, [threadFiles, setJourney, collapseAutoExpanded]);
+
+  const handleHoverStart = useCallback((threadId: string) => {
+    if (selectedTaskId) return; // don't override pinned selection
+    highlightTask(threadId);
+  }, [selectedTaskId, highlightTask]);
+
+  const handleHoverEnd = useCallback(() => {
+    if (selectedTaskId) return; // keep pinned selection
+    clearJourney();
+    collapseAutoExpanded();
+  }, [selectedTaskId, clearJourney, collapseAutoExpanded]);
+
+  const handleClick = useCallback((threadId: string) => {
+    if (selectedTaskId === threadId) {
+      // Deselect
+      setSelectedTaskId(null);
+      clearJourney();
+      collapseAutoExpanded();
+    } else {
+      setSelectedTaskId(threadId);
+      highlightTask(threadId);
+    }
+  }, [selectedTaskId, highlightTask, clearJourney, collapseAutoExpanded]);
+
+  const activeThreadId = threads.length > 0 && !threads[threads.length - 1].completedAt
+    ? threads[threads.length - 1].threadId
+    : null;
+
+  // Auto-select the latest thread by default and track it live
+  const latestThreadId = threads.length > 0 ? threads[threads.length - 1].threadId : null;
+  useEffect(() => {
+    if (!latestThreadId) return;
+    // Auto-select if nothing is selected, or if the selected task is the previous latest (follow mode)
+    const prevSelected = selectedTaskId;
+    if (!prevSelected || prevSelected !== latestThreadId) {
+      setSelectedTaskId(latestThreadId);
+      highlightTask(latestThreadId);
+    }
+  }, [latestThreadId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-highlight when files change for the selected task (live update)
+  useEffect(() => {
+    if (selectedTaskId) {
+      highlightTask(selectedTaskId);
+    }
+  }, [threadFiles]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{
@@ -222,7 +542,7 @@ export function JourneyPanel() {
     }}>
       {/* Header */}
       <div style={{
-        padding: '8px 12px',
+        padding: '8px 10px',
         borderBottom: `1px solid ${colors.border.subtle}`,
         flexShrink: 0,
       }}>
@@ -230,7 +550,6 @@ export function JourneyPanel() {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginBottom: 6,
         }}>
           <span style={{
             fontSize: 10,
@@ -240,73 +559,49 @@ export function JourneyPanel() {
             color: colors.text.muted,
             textTransform: 'uppercase',
           }}>
-            Journey
+            Tasks
           </span>
           <span style={{
             fontSize: 10,
             fontFamily: fonts.mono,
             color: colors.text.dimmed,
           }}>
-            {entries.length} steps
+            {threads.length} tasks
           </span>
-        </div>
-        {/* Type legend */}
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {Array.from(typeCounts.entries()).map(([type, count]) => {
-            const cfg = TYPE_CONFIG[type];
-            return (
-              <span key={type} style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 3,
-                fontSize: 9,
-                fontFamily: fonts.mono,
-                color: cfg.color,
-                padding: '1px 5px',
-                borderRadius: 3,
-                background: alpha(cfg.color, 0.1),
-              }}>
-                <span style={{ fontSize: 10 }}>{cfg.icon}</span>
-                {count}
-              </span>
-            );
-          })}
         </div>
       </div>
 
-      {/* Timeline */}
+      {/* Task cards */}
       <div
         ref={scrollRef}
         style={{
           flex: 1,
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '10px 10px 10px 8px',
+          padding: '4px 4px',
         }}
       >
-        {entries.length === 0 ? (
+        {threads.length === 0 ? (
           <div style={{
             padding: '20px 12px',
-            fontSize: 12,
+            fontSize: 11,
             color: colors.text.muted,
             textAlign: 'center',
-            lineHeight: 1.6,
+            fontFamily: fonts.mono,
           }}>
-            No journey data yet
-            <br />
-            <span style={{ fontSize: 11, color: colors.text.dimmed }}>
-              Agent actions will trace a path here
-            </span>
+            No tasks yet
           </div>
         ) : (
-          entries.map((entry, i) => (
-            <JourneyNode
-              key={entry.id}
-              entry={entry}
-              isSelected={selectedEntryId === entry.id}
-              isLast={i === entries.length - 1}
-              onSelect={() => selectEntry(entry.id)}
-              onHover={handleHover}
+          [...threads].reverse().filter((t) => stripTags(t.prompt).length > 0).map((thread) => (
+            <JourneyTaskCard
+              key={thread.threadId}
+              thread={thread}
+              isActive={thread.threadId === activeThreadId}
+              isSelected={thread.threadId === selectedTaskId}
+              files={threadFiles.get(thread.threadId) || []}
+              onHoverStart={() => handleHoverStart(thread.threadId)}
+              onHoverEnd={handleHoverEnd}
+              onClick={() => handleClick(thread.threadId)}
             />
           ))
         )}

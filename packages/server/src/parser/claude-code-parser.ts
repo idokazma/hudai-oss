@@ -350,8 +350,23 @@ export class ClaudeCodeParser extends EventEmitter {
 
     // User prompt: ❯ text (but not menu selection like ❯ 1. Yes)
     if (line.startsWith('❯') && !/^❯\s*\d+\./.test(line)) {
-      const prompt = line.replace(/^❯\s*/, '').trim();
-      if (prompt && !this.emittedPrompts.has(prompt)) {
+      let prompt = line.replace(/^❯\s*/, '').trim();
+      // Strip XML tags, tool IDs, and artifacts
+      prompt = prompt
+        .replace(/<[^>]*>[\s\S]*?<\/[^>]*>/g, '')
+        .replace(/<[^>]+>/g, '')
+        .replace(/toolu_[a-zA-Z0-9_-]+/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      // Filter out non-human content: slash commands, task IDs, empty, too short
+      const isHumanPrompt = prompt.length > 3
+        && !/^\/\w+/.test(prompt)
+        && !/^[a-z0-9]{8,}$/i.test(prompt)  // bare IDs like byq76cax7
+        && !/^caveat:/i.test(prompt)
+        && !/^read the output file/i.test(prompt)
+        && !prompt.startsWith('{')
+        && !prompt.startsWith('[');
+      if (isHumanPrompt && !this.emittedPrompts.has(prompt)) {
         this.emittedPrompts.add(prompt);
         this.emitEvent({
           category: 'control',

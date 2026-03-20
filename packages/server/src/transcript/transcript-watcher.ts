@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { watch, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import crypto from 'node:crypto';
 import type { AVPEvent, PermissionRule } from '@hudai/shared';
 import { translateJsonlEntry, extractUsage, type JsonlEntry, type TranslateOptions } from './jsonl-to-avp.js';
 
@@ -23,6 +24,12 @@ export class TranscriptWatcher extends EventEmitter {
   private seenToolIds = new Map<string, { name: string; ts: number; input?: Record<string, any> }>();
   private _active = false;
   private _permissionRules: PermissionRule[] = [];
+
+  // Plan progress tracking
+  private planSteps: string[] = [];
+  private planCurrentStep = 0;
+  private toolActivitySinceLastAdvance = 0;
+  private lastEntryType: string = '';
 
   constructor(sessionId: string, projectPath: string) {
     super();
@@ -190,6 +197,149 @@ export class TranscriptWatcher extends EventEmitter {
     this.filePath = null;
     this.fileOffset = 0;
     this.seenToolIds.clear();
+    this.planSteps = [];
+    this.planCurrentStep = 0;
+    this.toolActivitySinceLastAdvance = 0;
+  }
+
+  /**
+   * Track plan progress by correlating JSONL entries with plan steps.
+   *
+   * Strategy:
+   * - When a plan.update event is emitted, store the plan steps
+   * - Track tool activity (file edits, tests, searches) as work on current step
+   * - When assistant text references the next step number/name, advance
+   * - When a user turn boundary arrives after significant tool activity, advance
+   * - Emit updated plan.update events to advance currentStep
+   */
+  private trackPlanProgress(entry: JsonlEntry, events: AVPEvent[]): void {
+    // Pick up new plans from emitted events
+    for (const ev of events) {
+      if (ev.type === 'plan.update') {
+        const steps = (ev as any).data?.steps;
+        const currentStep = (ev as any).data?.currentStep ?? 0;
+        if (Array.isArray(steps) && steps.length >= 2) {
+          // Only reset if this is a genuinely new plan (different steps)
+          const stepsKey = steps.join('|');
+          const prevKey = this.planSteps.join('|');
+          if (stepsKey !== prevKey) {
+            this.planSteps = steps;
+            this.planCurrentStep = currentStep;
+            this.toolActivitySinceLastAdvance = 0;
+          } else if (currentStep > this.planCurrentStep) {
+            // Same plan but higher currentStep (e.g. from TodoWrite update)
+            this.planCurrentStep = currentStep;
+            this.toolActivitySinceLastAdvance = 0;
+          }
+        }
+      }
+    }
+
+    // No plan to track
+    if (this.planSteps.length === 0) return;
+
+    // Count tool activity from events
+    const WORK_EVENTS = new Set(['file.edit', 'file.create', 'file.read', 'exec.start', 'search.grep', 'search.glob']);
+    for (const ev of events) {
+      if (WORK_EVENTS.has(ev.type)) {
+        this.toolActivitySinceLastAdvance++;
+      }
+    }
+
+    // Check assistant text for step references that indicate advancement
+    if (entry.type === 'assistant') {
+      const content = entry.message?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === 'text' && block.text) {
+            const advanced = this.checkTextForStepAdvance(block.text);
+            if (advanced) return; // Already emitted update
+          }
+        }
+      }
+    }
+
+    // Turn boundary: user entry after assistant work → advance if there was activity
+    if (entry.type === 'user' && this.lastEntryType === 'assistant') {
+      if (this.toolActivitySinceLastAdvance >= 3 && this.planCurrentStep < this.planSteps.length - 1) {
+        this.advancePlanStep();
+      }
+    }
+
+    this.lastEntryType = entry.type;
+  }
+
+  /**
+   * Check assistant text for references to completing steps or moving to next step.
+   * Returns true if plan was advanced.
+   */
+  private checkTextForStepAdvance(text: string): boolean {
+    if (this.planCurrentStep >= this.planSteps.length - 1) return false;
+
+    const lower = text.toLowerCase();
+    const nextStepNum = this.planCurrentStep + 2; // 1-indexed for display
+    const nextStepName = this.planSteps[this.planCurrentStep + 1]?.toLowerCase() || '';
+
+    // Pattern: "Step N" or "step N:" where N is the next step
+    const stepNumPattern = new RegExp(`\\bstep\\s+${nextStepNum}\\b`, 'i');
+    // Pattern: "Now let's..." or "Moving on to..." or "Next," followed by step name keywords
+    const transitionPattern = /\b(now (?:let'?s|i'?ll|we)|moving (?:on|to)|next[,:]|moving forward)\b/i;
+    // Pattern: numbered reference like "2." or "2)" at start of a line
+    const numberedRef = new RegExp(`^\\s*${nextStepNum}[.):]`, 'm');
+
+    // Check if text mentions the next step by number
+    if (stepNumPattern.test(text)) {
+      if (this.toolActivitySinceLastAdvance >= 1) {
+        this.advancePlanStep();
+        return true;
+      }
+    }
+
+    // Check for transition phrases + next step name keywords
+    if (transitionPattern.test(lower) && this.toolActivitySinceLastAdvance >= 2) {
+      // Extract key words from next step name and check if any appear in text
+      const keywords = nextStepName.split(/\s+/).filter(w => w.length > 4);
+      const mentionsNext = keywords.some(kw => lower.includes(kw));
+      if (mentionsNext) {
+        this.advancePlanStep();
+        return true;
+      }
+    }
+
+    // Check for numbered reference to next step at line start
+    if (numberedRef.test(text) && this.toolActivitySinceLastAdvance >= 2) {
+      this.advancePlanStep();
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Advance the plan to the next step and emit an updated plan.update event.
+   */
+  private advancePlanStep(): void {
+    if (this.planCurrentStep >= this.planSteps.length - 1) return;
+
+    this.planCurrentStep++;
+    this.toolActivitySinceLastAdvance = 0;
+
+    console.log(`[plan-progress] Advanced to step ${this.planCurrentStep + 1}/${this.planSteps.length}: ${this.planSteps[this.planCurrentStep]}`);
+
+    const event: AVPEvent = {
+      id: crypto.randomUUID(),
+      sessionId: this.sessionId,
+      timestamp: Date.now(),
+      category: 'reasoning',
+      type: 'plan.update',
+      source: 'transcript',
+      data: {
+        steps: this.planSteps,
+        currentStep: this.planCurrentStep,
+      },
+    } as AVPEvent;
+
+    this.emit('event', event);
   }
 
   private async readNewLines(): Promise<void> {
@@ -219,6 +369,8 @@ export class TranscriptWatcher extends EventEmitter {
           for (const event of events) {
             this.emit('event', event);
           }
+          // Plan progress tracking
+          this.trackPlanProgress(entry, events);
           // Extract token usage for cost tracking
           const usageData = extractUsage(entry);
           if (usageData) {

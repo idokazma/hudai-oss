@@ -32,6 +32,7 @@ export class AgentProcess extends EventEmitter {
   private tmuxTarget: string = '';
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private lastCaptureLines: string[] = [];
+  private lastPaneContentStr: string = '';
   private _running = false;
 
   get running() {
@@ -42,22 +43,92 @@ export class AgentProcess extends EventEmitter {
     return tmuxExec(`display-message -t "${tmuxTarget}" -p "#{pane_current_path}"`).trim();
   }
 
-  static listPanes(): Array<{ id: string; title: string; command: string }> {
+  static listPanes(): Array<{ id: string; title: string; command: string; cwd: string }> {
     try {
       const raw = tmuxExec(
-        'list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|||#{pane_title}|||#{pane_current_command}"'
+        'list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}|||#{pane_title}|||#{pane_current_command}|||#{pane_current_path}"'
       );
       return raw
         .trim()
         .split('\n')
         .filter(Boolean)
         .map((line) => {
-          const [id, title, command] = line.split('|||');
-          return { id, title: title || id, command: command || '' };
+          const [id, title, command, cwd] = line.split('|||');
+          return { id, title: title || id, command: command || '', cwd: cwd || '' };
         });
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Capture the last N lines from a tmux pane.
+   */
+  static captureLastLines(paneTarget: string, lineCount: number = 20): string {
+    try {
+      return tmuxExec(`capture-pane -t "${paneTarget}" -p -S -${lineCount}`);
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Peek at the last few lines of a tmux pane to detect agent status.
+   */
+  static peekPaneStatus(paneTarget: string): { status: 'working' | 'waiting_input' | 'waiting_permission' | 'asking' | 'idle' | 'unknown'; statusLine: string } {
+    try {
+      const raw = tmuxExec(`capture-pane -t "${paneTarget}" -p -S -20`);
+      const lines = raw.split('\n').map(l => l.replace(/\x1b\[[0-9;]*m/g, '').trim()).filter(Boolean);
+      const lastLines = lines.slice(-10);
+      const tail = lastLines.join('\n');
+
+      // Check for idle ❯ prompt first (Claude Code's "waiting for input" prompt)
+      // Must come before permission check — the ❯ prompt with a status bar hint
+      // like "⏵⏵ accept edits on" is still idle, not a permission request.
+      const lastLine = lastLines[lastLines.length - 1] || '';
+      if (tail.match(/^❯\s*$/m)) {
+        return { status: 'waiting_input', statusLine: '' };
+      }
+
+      // Check for permission prompt (Yes/No/Yes always)
+      if (tail.match(/\(Y\)es.*\(N\)o/i) || tail.includes('Allow') || tail.match(/Do you want to/i)) {
+        const contextLine = lastLines.find(l => l.includes('Allow') || l.match(/\(Y\)es/i) || l.match(/Do you want/i)) || lastLines[lastLines.length - 1];
+        return { status: 'waiting_permission', statusLine: contextLine };
+      }
+
+      // Check for question (? prompt from AskUserQuestion)
+      if (tail.match(/^\?\s+/m) || tail.match(/Has a question/i)) {
+        const questionLine = lastLines.find(l => l.match(/^\?\s+/)) || lastLines[lastLines.length - 1];
+        return { status: 'asking', statusLine: questionLine };
+      }
+
+      // Check for waiting input (> prompt at end, $ prompt)
+      if (lastLine.match(/^>\s*$/) || lastLine.match(/\$\s*$/)) {
+        return { status: 'waiting_input', statusLine: '' };
+      }
+
+      // Check for spinner / working indicators
+      if (tail.includes('⏺') || tail.includes('⠋') || tail.includes('⠙') || tail.includes('⠹') || tail.includes('⠸') || tail.includes('⠼') || tail.includes('⠴') || tail.includes('⠦') || tail.includes('⠧') || tail.includes('⠇') || tail.includes('⠏')) {
+        const workLine = lastLines[lastLines.length - 1];
+        return { status: 'working', statusLine: workLine };
+      }
+
+      // If command is claude/node, likely working
+      return { status: 'unknown', statusLine: lastLine };
+    } catch {
+      return { status: 'unknown', statusLine: '' };
+    }
+  }
+
+  /**
+   * List all panes with their detected status.
+   */
+  static listPanesWithStatus(): Array<{ id: string; title: string; command: string; status: 'working' | 'waiting_input' | 'waiting_permission' | 'asking' | 'idle' | 'unknown'; statusLine: string }> {
+    const panes = AgentProcess.listPanes();
+    return panes.map((pane) => {
+      const { status, statusLine } = AgentProcess.peekPaneStatus(pane.id);
+      return { ...pane, status, statusLine };
+    });
   }
 
   /**
@@ -136,9 +207,13 @@ export class AgentProcess extends EventEmitter {
           this.emit('data', newLines.join('\n'));
         }
 
-        // Always emit the current visible pane content for the live preview
-        const caret = this.getCaret(this.lastRawLineCount, currentLines.length);
-        this.emit('pane-content', currentLines.join('\n'), caret);
+        // Only emit pane-content when content actually changed
+        const joined = currentLines.join('\n');
+        if (joined !== this.lastPaneContentStr) {
+          const caret = this.getCaret(this.lastRawLineCount, currentLines.length);
+          this.emit('pane-content', joined, caret);
+          this.lastPaneContentStr = joined;
+        }
 
         this.lastCaptureLines = currentLines;
       } catch {

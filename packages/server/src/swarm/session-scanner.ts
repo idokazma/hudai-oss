@@ -143,6 +143,94 @@ export class SessionScanner {
   }
 
   /**
+   * Find the most recent JSONL file for a project, regardless of age.
+   * Accepts a project name, tmux target, OR a full project path.
+   * Uses decoded slug paths + history.jsonl for matching.
+   */
+  async findLatestJsonlForProject(projectNameOrPath: string): Promise<{ jsonlPath: string; sessionId: string } | null> {
+    try {
+      const slugDirs = await this.listProjectDirs();
+      const historyMap = await this.readHistory();
+      const searchLower = projectNameOrPath.toLowerCase();
+      let bestMatch: { jsonlPath: string; sessionId: string; mtime: number } | null = null;
+
+      // If search looks like a path, convert to slug format (Claude Code replaces / and . with -)
+      const searchSlug = searchLower.startsWith('/') ? searchLower.replace(/[/.]/g, '-') : null;
+      const searchName = searchLower.split('/').pop() || searchLower;
+
+      for (const slug of slugDirs) {
+        const projectDir = join(PROJECTS_DIR, slug);
+        const slugLower = slug.toLowerCase();
+
+        // Match strategies:
+        // 1. Slug ends with search name (e.g., slug "...-where2eat" for search "where2eat")
+        const slugEndsWithName = slugLower.endsWith(searchName);
+        // 2. Slug matches the path-to-slug conversion (e.g., "/Users/ido.kazma/.../where2eat" → "-Users-ido.kazma-...-where2eat")
+        const slugMatchesPath = searchSlug ? slugLower === searchSlug : false;
+        // 3. Decoded path matches search path or name
+        let decodedMatch = false;
+
+        if (!slugEndsWithName && !slugMatchesPath) {
+          const decodedPath = await this.decodeProjectPath(projectDir, slug);
+          if (decodedPath) {
+            const decodedLower = decodedPath.toLowerCase();
+            const decodedName = decodedLower.split('/').pop() || '';
+            decodedMatch = decodedName === searchName ||
+              decodedLower === searchLower ||
+              decodedLower.endsWith('/' + searchName);
+          }
+        }
+
+        if (!slugEndsWithName && !slugMatchesPath && !decodedMatch) continue;
+
+        try {
+          const files = await readdir(projectDir);
+          const jsonlFiles = files.filter((f) => f.endsWith('.jsonl') && !f.startsWith('.'));
+
+          for (const file of jsonlFiles) {
+            const filePath = join(projectDir, file);
+            try {
+              const s = await stat(filePath);
+              if (!bestMatch || s.mtimeMs > bestMatch.mtime) {
+                bestMatch = {
+                  jsonlPath: filePath,
+                  sessionId: file.replace('.jsonl', ''),
+                  mtime: s.mtimeMs,
+                };
+              }
+            } catch { /* skip */ }
+          }
+        } catch { /* skip */ }
+      }
+
+      // Fallback: search history.jsonl for sessions that match by project path or name
+      if (!bestMatch) {
+        for (const [sessionId, entry] of historyMap.entries()) {
+          const entryLower = entry.project.toLowerCase();
+          const projectDirName = entryLower.split('/').pop() || '';
+          if (projectDirName === searchName || entryLower === searchLower || entryLower.endsWith('/' + searchName)) {
+            // Find the JSONL file for this session
+            for (const slug of slugDirs) {
+              const projectDir = join(PROJECTS_DIR, slug);
+              const filePath = join(projectDir, `${sessionId}.jsonl`);
+              try {
+                const s = await stat(filePath);
+                if (!bestMatch || s.mtimeMs > bestMatch.mtime) {
+                  bestMatch = { jsonlPath: filePath, sessionId, mtime: s.mtimeMs };
+                }
+              } catch { /* file doesn't exist in this slug dir */ }
+            }
+          }
+        }
+      }
+
+      return bestMatch ? { jsonlPath: bestMatch.jsonlPath, sessionId: bestMatch.sessionId } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * List project slug directories in ~/.claude/projects/
    */
   private async listProjectDirs(): Promise<string[]> {

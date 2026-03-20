@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { execSync, fork, type ChildProcess } from 'node:child_process';
 // @ts-ignore — @lydell/node-pty has types but exports field doesn't resolve them
 import * as nodePty from '@lydell/node-pty';
-import type { AVPEvent, ClientMessage, ServerMessage, SessionState, AdvisorVerbosity, AdvisorScope } from '@hudai/shared';
+import type { AVPEvent, ClientMessage, ServerMessage, SessionState, AdvisorVerbosity, AdvisorScope, AgentActivity, SwarmSnapshot } from '@hudai/shared';
 import { WS_PORT } from '@hudai/shared';
 import { AgentProcess } from './pty/agent-process.js';
 import { ClaudeCodeParser } from './parser/claude-code-parser.js';
@@ -25,14 +25,14 @@ import { getDb } from './persistence/db.js';
 import { loadSecrets, saveSecrets, getSecret, getKeysStatus } from './persistence/secrets.js';
 import { GraphBuilder } from './graph/graph-builder.js';
 import { TranscriptWatcher } from './transcript/transcript-watcher.js';
-// DISABLED: pane-analyzer replaced by SessionMonitor (JSONL-based status detection)
-// import { analyzePaneContent } from './parser/pane-analyzer.js';
+import { analyzePaneContent } from './parser/pane-analyzer.js';
 import { HooksHandler } from './hooks/hooks-handler.js';
 import type { ActivityUpdate } from './hooks/hooks-handler.js';
 import { AgentHost } from './agent/agent-host.js';
 import { StreamCommandHandler } from './agent/stream-command-handler.js';
 import { buildAgentConfig } from './config/config-scanner.js';
 import { writePermissionToggle } from './config/settings-reader.js';
+import { matchPermission } from './config/permission-matcher.js';
 import { getBuiltinSkill, BUILTIN_SKILLS } from './config/builtin-skills.js';
 import { SubagentWatcher } from './transcript/subagent-watcher.js';
 import { PlanFileWatcher } from './plans/plan-file-watcher.js';
@@ -493,14 +493,69 @@ async function attachToPane(tmuxTarget: string) {
       lastPaneChangeAt = Date.now();
     }
     lastPaneContent = content;
-    broadcast({ kind: 'pane.content', content, caret });
+    if (paneChanged) {
+      broadcast({ kind: 'pane.content', content, caret });
+    }
 
-    // ── Activity detection is now handled by SessionMonitor (JSONL) or hooks ──
-    // pane-analyzer (analyzePaneContent) is DISABLED — kept in codebase but not called.
-    // Pane content is only used for:
-    //   1. PanePreview (live terminal display) — broadcast above
-    //   2. Stale detection safety net — if everything else fails, detect idle after 2 min
+    // ── Fast-path activity detection via pane-analyzer ──
+    // Runs on every capture-pane poll (~500ms) for instant permission/question detection.
+    // Hooks and JSONL monitor can override but pane-analyzer is the fastest signal.
+    const analysis = analyzePaneContent(content);
 
+    const activityChanged = analysis.activity !== sessionState.agentActivity;
+    const detailChanged = analysis.detail !== sessionState.agentActivityDetail;
+
+    // Reset idle flag when agent starts working again
+    if (activityChanged && sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
+      idleNotified = false;
+    }
+
+    if (activityChanged || (detailChanged && (analysis.activity === 'waiting_answer' || analysis.activity === 'waiting_permission'))) {
+      if (analysis.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
+        idleNotified = true;
+      }
+
+      // Emit permission event for tracking
+      if (analysis.activity === 'waiting_permission' && sessionState.agentActivity !== 'waiting_permission') {
+        const detailStr = analysis.detail || '';
+        const toolName = detailStr.split(':')[0]?.trim() || 'Unknown';
+        // Command may be multiline (command + description); use full text for matching
+        const commandStr = detailStr.includes(':') ? detailStr.slice(detailStr.indexOf(':') + 1).trim() : '';
+        // For Bash matching, use the first line (actual command, not description)
+        const commandFirstLine = commandStr.split('\n')[0]?.trim() || commandStr;
+
+        handleEvent({
+          id: crypto.randomUUID(),
+          sessionId: sessionState.sessionId,
+          timestamp: Date.now(),
+          category: 'control',
+          type: 'permission.prompt',
+          source: 'tmux',
+          data: {
+            tool: toolName,
+            command: commandStr || 'Permission requested',
+          },
+        } as AVPEvent);
+
+        // Auto-approve if tool+command matches an allowed permission rule
+        if (cachedConfig && agent) {
+          const result = matchPermission(toolName, { command: commandFirstLine }, cachedConfig.permissions);
+          if (result.status === 'allowed') {
+            console.log(`[auto-approve] ${toolName}: ${commandStr.slice(0, 80)} (matched: ${result.rule})`);
+            agent.write('y');
+            agent.sendEnter();
+          }
+        }
+      }
+
+      updateSessionState({
+        agentActivity: analysis.activity,
+        agentActivityDetail: analysis.detail,
+        agentActivityOptions: analysis.options,
+      });
+    }
+
+    // Stale detection safety net
     const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
     const hookStaleSec = hooksActive ? (Date.now() - lastHookActivityAt) / 1000 : Infinity;
     if (
@@ -1774,45 +1829,181 @@ fastify.register(async function (app) {
             const snapshots = swarmRegistry.getSnapshots();
             const swarmAgents = swarmService.getSwarmStatus();
 
-            // Enrich snapshots with SwarmService data
+            // Enrich snapshots with SwarmService data + sessionState for attached session
+            // For sessions without live JSONL monitoring, read their JSONL to determine status
+            const jsonlStatusPromises: Array<{ snap: typeof snapshots[0]; promise: Promise<any> }> = [];
+
             for (const snap of snapshots) {
+              // For the attached session, overlay live sessionState if available
+              if (snap.isAttached || snap.sessionId === sessionState.sessionId) {
+                snap.isAttached = true;
+                const hookStale = hooksActive && (Date.now() - lastHookActivityAt) > 30_000;
+                // If hooks haven't fired recently or aren't active, also check JSONL
+                if (!hooksActive || hookStale) {
+                  // Queue JSONL lookup as additional signal for the attached session
+                  snap.activity = sessionState.agentActivity || undefined;
+                  snap.activityDetail = sessionState.agentActivityDetail;
+                  snap.currentFile = sessionState.agentCurrentFile ?? undefined;
+                  let lookupName = snap.projectName;
+                  const tmuxTarget = snap.tmuxTarget || snap.projectPath;
+                  if (tmuxTarget.includes(':')) {
+                    try {
+                      const cwd = AgentProcess.getPaneCwd(tmuxTarget);
+                      if (cwd) lookupName = cwd;
+                    } catch { /* tmux lookup failed */ }
+                  }
+                  jsonlStatusPromises.push({
+                    snap,
+                    promise: swarmService.getStatusFromJsonl(lookupName),
+                  });
+                } else {
+                  snap.activity = sessionState.agentActivity || 'working';
+                  snap.activityDetail = sessionState.agentActivityDetail;
+                  snap.currentFile = sessionState.agentCurrentFile ?? undefined;
+                }
+                continue;
+              }
+
+              // Try SwarmService (live JSONL monitor)
               const agent = swarmAgents.find((a) =>
                 a.sessionId === snap.sessionId || a.tmuxTarget === snap.projectPath
               );
-              if (agent) {
-                snap.activity = agent.status.activity;
-                snap.activityDetail = agent.status.detail;
-                snap.currentFile = agent.status.currentFile;
+              if (agent && (agent.status.activity as string) !== 'unknown') {
+                snap.activity = snap.activity || agent.status.activity;
+                snap.activityDetail = snap.activityDetail || agent.status.detail;
+                snap.currentFile = snap.currentFile || agent.status.currentFile;
                 snap.model = agent.metrics.model;
                 snap.tokensUsed = agent.metrics.tokensUsed;
                 snap.turnCount = agent.metrics.turnCount;
                 snap.toolCount = agent.metrics.toolCount;
-                snap.tmuxTarget = agent.tmuxTarget;
+                snap.tmuxTarget = snap.tmuxTarget || agent.tmuxTarget;
                 snap.source = agent.source;
+              } else {
+                // No live JSONL monitor — try JSONL file lookup
+                // Resolve tmux pane CWD to get actual project path (tmux session name may differ from project dir)
+                let lookupName = snap.projectName;
+                const tmuxTarget = snap.tmuxTarget || snap.projectPath;
+                if (tmuxTarget.includes(':')) {
+                  try {
+                    const cwd = AgentProcess.getPaneCwd(tmuxTarget);
+                    if (cwd) lookupName = cwd;
+                  } catch { /* tmux lookup failed, use projectName */ }
+                }
+                jsonlStatusPromises.push({
+                  snap,
+                  promise: swarmService.getStatusFromJsonl(lookupName),
+                });
               }
             }
 
             // Add JSONL-only sessions (non-tmux) not already in snapshots
             for (const agent of swarmAgents) {
               if (!agent.tmuxTarget && !snapshots.some((s) => s.sessionId === agent.sessionId)) {
-                snapshots.push({
+                const attachedTmux = sessionState.tmuxTarget;
+                const attachedProjectName = attachedTmux ? attachedTmux.split(':')[0] : '';
+                const isThisAttached = agent.isCurrentSession ||
+                  agent.sessionId === sessionState.sessionId ||
+                  (!!attachedProjectName && agent.projectPath.endsWith('/' + attachedProjectName)) ||
+                  (!!attachedProjectName && agent.projectName === attachedProjectName);
+
+                const snap: SwarmSnapshot = {
                   sessionId: agent.sessionId,
                   projectPath: agent.projectPath,
                   projectName: agent.projectName,
-                  startedAt: 0,
-                  status: agent.status.activity,
-                  eventCount: 0,
+                  startedAt: isThisAttached ? sessionState.startedAt : 0,
+                  status: 'working',
+                  eventCount: isThisAttached ? sessionState.eventCount : 0,
                   lastEventAt: agent.metrics.lastActivity || undefined,
-                  isAttached: agent.isCurrentSession,
-                  activity: agent.status.activity,
-                  activityDetail: agent.status.detail,
-                  currentFile: agent.status.currentFile,
+                  isAttached: isThisAttached,
+                  // Don't use live monitor status — it has stale-tool false positives
+                  // for active sessions. Use getStatusFromJsonl which has file-age heuristics.
+                  activity: isThisAttached ? (sessionState.agentActivity || undefined) : undefined,
+                  activityDetail: isThisAttached ? (sessionState.agentActivityDetail || undefined) : undefined,
+                  currentFile: isThisAttached ? (sessionState.agentCurrentFile ?? undefined) : agent.status.currentFile,
                   model: agent.metrics.model,
                   tokensUsed: agent.metrics.tokensUsed,
                   turnCount: agent.metrics.turnCount,
                   toolCount: agent.metrics.toolCount,
                   source: 'jsonl',
+                };
+                snapshots.push(snap);
+
+                // Always queue JSONL file lookup for status + metrics
+                jsonlStatusPromises.push({
+                  snap,
+                  promise: swarmService.getStatusFromJsonl(agent.projectPath),
                 });
+              }
+            }
+
+            // Resolve ALL JSONL status lookups in parallel (tmux sessions + JSONL-only sessions)
+            if (jsonlStatusPromises.length > 0) {
+              const results = await Promise.allSettled(
+                jsonlStatusPromises.map((p) => p.promise)
+              );
+              for (let i = 0; i < jsonlStatusPromises.length; i++) {
+                const result = results[i];
+                const snap = jsonlStatusPromises[i].snap;
+                if (result.status === 'fulfilled' && result.value) {
+                  const r = result.value;
+                  snap.activity = snap.activity || r.status.activity;
+                  snap.activityDetail = snap.activityDetail || r.status.detail;
+                  if (r.lastMessage) snap.lastMessage = snap.lastMessage || r.lastMessage;
+                  if (r.model) snap.model = snap.model || r.model;
+                  if (r.tokensUsed) snap.tokensUsed = snap.tokensUsed || r.tokensUsed;
+                  if (r.turnCount) snap.turnCount = snap.turnCount || r.turnCount;
+                  if (r.toolCount) snap.toolCount = snap.toolCount || r.toolCount;
+                }
+              }
+            }
+
+            // Populate lastMessage for all sessions
+            for (const snap of snapshots) {
+              if (snap.lastMessage) continue;
+
+              // Strategy 1: event store by sessionId (most reliable for attached/monitored sessions)
+              if (snap.sessionId) {
+                try {
+                  const recentEvents = eventStore.getLatest(snap.sessionId, 50);
+                  for (const ev of recentEvents) {
+                    if (ev.type === 'raw.output') {
+                      const text = ((ev as any).data?.text || '').trim();
+                      if (text.length >= 20 && !text.startsWith('<system-reminder') && !text.startsWith('<task-notification')) {
+                        const firstLine = text.split('\n').find((l: string) => l.trim().length > 10)?.trim();
+                        snap.lastMessage = (firstLine || text).slice(0, 200);
+                        break;
+                      }
+                    }
+                  }
+                } catch { /* skip */ }
+              }
+
+              // Strategy 2: event store by projectPath (fallback)
+              if (!snap.lastMessage) {
+                try {
+                  const recentEvents = eventStore.getByProject(snap.projectPath, 0, 50);
+                  for (let i = recentEvents.length - 1; i >= 0; i--) {
+                    const ev = recentEvents[i];
+                    if (ev.type === 'raw.output') {
+                      const text = ((ev as any).data?.text || '').trim();
+                      if (text.length >= 20 && !text.startsWith('<system-reminder') && !text.startsWith('<task-notification')) {
+                        const firstLine = text.split('\n').find((l: string) => l.trim().length > 10)?.trim();
+                        snap.lastMessage = (firstLine || text).slice(0, 200);
+                        break;
+                      }
+                    }
+                  }
+                } catch { /* skip */ }
+              }
+
+              // Strategy 3: JSONL file (for sessions not in event store — JSONL-only discovered sessions)
+              if (!snap.lastMessage && snap.source === 'jsonl') {
+                try {
+                  const jsonlResult = await swarmService.getStatusFromJsonl(snap.projectPath);
+                  if (jsonlResult?.lastMessage) {
+                    snap.lastMessage = jsonlResult.lastMessage;
+                  }
+                } catch { /* skip */ }
               }
             }
 
@@ -1970,11 +2161,27 @@ fastify.register(async function (app) {
     const sessionName = target.split(':')[0];
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" window-size latest`, { stdio: 'ignore' }); } catch {}
 
-    // Disable alternate screen so future apps stay in normal buffer with scrollback
-    try { execSync(`${tmuxBin} set-option -t "${sessionName}" -w alternate-screen off`, { stdio: 'ignore' }); } catch {}
+    // Allow alternate screen — Claude Code's TUI uses it for clean redraws.
+    // Disabling it causes flicker because TUI cursor-movement/clear operations
+    // happen in the normal buffer and are visible as text pushing then snapping back.
 
     // Hide tmux status bar — Hudai provides its own chrome
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" status off`, { stdio: 'ignore' }); } catch {}
+
+    // Send tmux scrollback history so xterm.js has content to scroll through.
+    // Uses -e for escape sequences (colors), -J to join wrapped lines, \r\n for xterm.
+    try {
+      const history = execSync(
+        `${tmuxBin} capture-pane -t "${target}" -e -J -p -S -500`,
+        { encoding: 'utf-8', maxBuffer: 1024 * 1024 }
+      );
+      if (history && socket.readyState === 1) {
+        // Convert \n to \r\n for proper xterm rendering
+        socket.send(history.replace(/\n/g, '\r\n'));
+      }
+    } catch {
+      // capture-pane failed — continue without history
+    }
 
     // Spawn tmux attach inside a real PTY
     const ptyProcess = nodePty.spawn(tmuxBin, ['attach-session', '-t', target], {
@@ -1983,14 +2190,30 @@ fastify.register(async function (app) {
       env: { ...process.env, TERM: 'xterm-256color' },
     });
 
-    // Strip escape sequences that enable alternate screen or mouse tracking.
-    // This keeps xterm.js in normal buffer mode (with scrollback) and prevents
-    // mouse wheel events from being consumed by mouse reporting.
-    const STRIP_RE = /\x1b\[\?(9|47|1000|1002|1003|1004|1005|1006|1015|1047|1049)[hl]/g;
+    // Strip mouse tracking escapes only — these cause wheel events to be
+    // consumed by mouse reporting instead of scrolling xterm.js.
+    // Alternate screen escapes (47, 1047, 1049) are kept so Claude Code's
+    // TUI can redraw cleanly without flickering in the normal buffer.
+    const STRIP_MOUSE_RE = /\x1b\[\?(9|1000|1002|1003|1004|1005|1006|1015)[hl]/g;
+
+    // Batch PTY output to reduce flicker. Claude Code's TUI sends screen
+    // updates across multiple chunks (e.g. diff content, then cursor reset).
+    // Without batching, xterm renders intermediate states as visible flicker.
+    // We collect chunks and flush once per frame (~16ms).
+    let ptyBuffer = '';
+    let ptyFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushPty = () => {
+      ptyFlushTimer = null;
+      if (ptyBuffer && socket.readyState === 1) {
+        socket.send(ptyBuffer);
+      }
+      ptyBuffer = '';
+    };
 
     ptyProcess.onData((data: string) => {
-      if (socket.readyState === 1) {
-        socket.send(data.replace(STRIP_RE, ''));
+      ptyBuffer += data.replace(STRIP_MOUSE_RE, '');
+      if (!ptyFlushTimer) {
+        ptyFlushTimer = setTimeout(flushPty, 16);
       }
     });
 
@@ -2016,6 +2239,7 @@ fastify.register(async function (app) {
 
     socket.on('close', () => {
       console.log(`[terminal] WebSocket closed for target: ${target}`);
+      if (ptyFlushTimer) clearTimeout(ptyFlushTimer);
       ptyProcess.kill();
     });
   });

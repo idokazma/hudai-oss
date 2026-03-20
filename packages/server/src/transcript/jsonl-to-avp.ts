@@ -191,8 +191,11 @@ export function translateJsonlEntry(
           },
         }));
       } else if (block.type === 'text' && block.text.trim()) {
+        const textTrimmed = block.text.trim();
+        // Skip system injections that leak into assistant text blocks
+        if (textTrimmed.startsWith('<system-reminder') || textTrimmed.startsWith('<task-notification')) continue;
         // Detect inline numbered plans from assistant text (e.g. "1. Step one\n2. Step two\n...")
-        const planSteps = extractNumberedPlan(block.text);
+        const planSteps = extractNumberedPlan(textTrimmed);
         if (planSteps.length >= 3) {
           events.push(makeEvent(sessionId, ts, {
             category: 'reasoning',
@@ -205,7 +208,7 @@ export function translateJsonlEntry(
           category: 'control',
           type: 'raw.output',
           source: 'transcript',
-          data: { text: block.text.trim().slice(0, 500) },
+          data: { text: textTrimmed.slice(0, 2000) },
         }));
       }
     }
@@ -255,15 +258,20 @@ export function translateJsonlEntry(
       data: { preTokens, trigger },
     }));
   } else if (entry.type === 'user') {
-    // Top-level user messages — could be user prompts
+    // Top-level user messages — only genuine human prompts become task.start
+    // Rule: human input is string content that doesn't start with '<' (system-injected XML)
+    //       and isn't an array (tool results). This is the simplest reliable heuristic.
     const content = entry.message?.content;
-    if (typeof content === 'string' && content.trim()) {
-      events.push(makeEvent(sessionId, ts, {
-        category: 'control',
-        type: 'task.start',
-        source: 'transcript',
-        data: { prompt: content.trim().slice(0, 500) },
-      }));
+    if (typeof content === 'string') {
+      const trimmed = content.trim();
+      if (trimmed.length > 3 && !trimmed.startsWith('<')) {
+        events.push(makeEvent(sessionId, ts, {
+          category: 'control',
+          type: 'task.start',
+          source: 'transcript',
+          data: { prompt: trimmed.slice(0, 500) },
+        }));
+      }
     }
   }
 

@@ -60,6 +60,11 @@ export interface SendTextCommand {
   data: { text: string };
 }
 
+export interface SpawnAgentCommand {
+  type: 'spawn_agent';
+  data: { name: string; prompt: string };
+}
+
 export type SteeringCommand =
   | FocusFileCommand
   | ScopeBoundaryCommand
@@ -74,4 +79,5 @@ export type SteeringCommand =
   | SetAutoExpandCommand
   | ClearCommand
   | SendKeysCommand
-  | SendTextCommand;
+  | SendTextCommand
+  | SpawnAgentCommand;

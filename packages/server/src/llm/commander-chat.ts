@@ -189,6 +189,19 @@ export class CommanderChat {
     }
     lines.push('');
 
+    // ── Conversation: the human-readable exchange (primary context)
+    const timeline = buildConversationTimeline(events);
+    if (timeline.length > 0) {
+      lines.push('CONVERSATION (user prompts & agent responses)');
+      lines.push('──────────────────────────────────────────────');
+      // Show last 40 entries — this is the most useful context
+      const tail = timeline.slice(-40);
+      for (const entry of tail) {
+        lines.push(entry);
+      }
+      lines.push('');
+    }
+
     // ── The Story: work phases as a to-do list
     lines.push('JOURNEY');
     lines.push('───────');
@@ -263,18 +276,6 @@ export class CommanderChat {
       }
     }
 
-    // ── Conversation: user prompts + agent explanations, chronologically
-    const timeline = buildConversationTimeline(events);
-    if (timeline.length > 0) {
-      lines.push('CONVERSATION');
-      lines.push('────────────');
-      // Show last 30 entries
-      for (const entry of timeline) {
-        lines.push(entry);
-      }
-      lines.push('');
-    }
-
     // ── Right Now
     lines.push('RIGHT NOW');
     lines.push('─────────');
@@ -300,7 +301,7 @@ export class CommanderChat {
 
     // ── Recent actions (filter noise, show last 10 meaningful)
     const meaningful = events.filter(e => !NOISE_EVENT_TYPES.has(e.type));
-    const tail = meaningful.slice(-10);
+    const tail = meaningful.slice(-5);
     if (tail.length > 0) {
       lines.push('RECENT ACTIONS');
       lines.push('──────────────');

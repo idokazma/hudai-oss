@@ -17,7 +17,7 @@ export interface PositionedActivity {
 // Color constants — derived from centralized tokens
 const COLOR_MODIFIED = hex(colors.accent.muted);
 const COLOR_GLOW_READ = hex(colors.accent.light);
-const COLOR_GLOW_WRITE = hex(colors.accent.light);
+const COLOR_GLOW_WRITE = hex(colors.accent.orange);
 const COLOR_HIGHLIGHT = 0xffffff;
 const COLOR_HIGHLIGHT_EDGE = hex(colors.accent.light);
 const EDGE_COLOR = hex(colors.accent.primary);
@@ -109,6 +109,8 @@ export class MapRenderer {
   private dragMoved = false;
   private pointerDownPos = { x: 0, y: 0 };
   private canvas: HTMLCanvasElement | null = null;
+  private lastEmptyDblClickZoomed = false; // toggle: first dbl-click zooms in, second resets
+  private panRafId: number | null = null; // throttle pan renders to rAF
 
   // Hover state
   private hoveredNodeId: string | null = null;
@@ -139,6 +141,10 @@ export class MapRenderer {
 
   // Scope selection
   private _scopeNodeIds = new Set<string>();
+
+  // Journey highlight — nodes highlighted by journey task hover/click (treated like multi-hover)
+  private _journeyHighlightIds = new Set<string>();
+  private _journeyLabels = new Map<string, Text>();
 
   // Agent spotlight
   private _spotlightNodeId: string | null = null;
@@ -279,8 +285,13 @@ export class MapRenderer {
       this.world.removeChild(lbl);
       lbl.destroy();
     }
+    for (const lbl of this._journeyLabels.values()) {
+      this.world.removeChild(lbl);
+      lbl.destroy();
+    }
     this.nodeGfx.clear();
     this.labelGfx.clear();
+    this._journeyLabels.clear();
     this.indicatorLabels.clear();
     this.containerTechLabels.clear();
     this.containerStatLabels.clear();
@@ -368,6 +379,15 @@ export class MapRenderer {
   setSpotlight(nodeId: string | null) {
     this._spotlightNodeId = nodeId;
     // spotlightGfx is continuously redrawn by the ticker
+  }
+
+  setJourneyHighlight(ids: Set<string>) {
+    this._journeyHighlightIds = ids;
+    // Hide labels for nodes no longer highlighted
+    if (ids.size === 0) {
+      for (const lbl of this._journeyLabels.values()) lbl.visible = false;
+    }
+    this.render();
   }
 
   setFileIndicators(indicators: Map<string, FileIndicator>) {
@@ -461,7 +481,8 @@ export class MapRenderer {
       const t = nodeById.get(tId);
       if (!s || !t) continue;
 
-      const isHighlighted = hasHover && (sId === hovered || tId === hovered);
+      const isHighlighted = (hasHover && (sId === hovered || tId === hovered))
+        || (this._journeyHighlightIds.size > 0 && (this._journeyHighlightIds.has(sId) || this._journeyHighlightIds.has(tId)));
       if (isHighlighted) {
         this.highlightEdgeGfx.moveTo(s.x, s.y).lineTo(t.x, t.y);
       } else {
@@ -469,8 +490,9 @@ export class MapRenderer {
       }
     }
 
-    this.edgeGfx.stroke({ width: 0.5, color: EDGE_COLOR, alpha: hasHover ? 0.03 : 0.08 });
-    if (hasHover) {
+    const hasAnyHighlight = hasHover || this._journeyHighlightIds.size > 0;
+    this.edgeGfx.stroke({ width: 0.5, color: EDGE_COLOR, alpha: hasAnyHighlight ? 0.03 : 0.08 });
+    if (hasAnyHighlight) {
       this.highlightEdgeGfx.stroke({ width: 1.5, color: COLOR_HIGHLIGHT_EDGE, alpha: 0.5 });
     }
 
@@ -554,7 +576,9 @@ export class MapRenderer {
       const r = nodeRadius(node.displaySize ?? node.size, isGroup, node.childCount, isContainer);
       const isHovered = node.id === hovered;
       const isConnected = connected.has(node.id);
-      const isDimmed = hasHover && !isHovered && !isConnected;
+      const isJourneyHighlighted = this._journeyHighlightIds.has(node.id);
+      const hasJourneyHighlight = this._journeyHighlightIds.size > 0;
+      const isDimmed = (hasHover && !isHovered && !isConnected) || (hasJourneyHighlight && !isJourneyHighlighted && !isHovered);
       const isFocused = node.id === this.focusedNodeId;
       const isScoped = this._scopeNodeIds.has(node.id);
       const indicator = this._fileIndicators.get(node.id);
@@ -565,7 +589,7 @@ export class MapRenderer {
         const boxW = r * 2.4;
         const boxH = r * 1.6;
         const borderColor = node.modified ? COLOR_MODIFIED : getGroupColor(node.path || node.id);
-        const borderAlpha = isDimmed ? 0.1 : (isHovered ? 0.9 : 0.6);
+        const borderAlpha = isDimmed ? 0.25 : (isHovered ? 0.9 : 0.6);
 
         // Heat glow around container
         if (node.heat > 0.05 && !isDimmed) {
@@ -575,14 +599,14 @@ export class MapRenderer {
         }
 
         // Hover ring
-        if (isHovered) {
+        if (isHovered || isJourneyHighlighted) {
           gfx.roundRect(-boxW / 2 - 3, -boxH / 2 - 3, boxW + 6, boxH + 6, 12)
             .fill({ color: COLOR_HIGHLIGHT, alpha: 0.08 });
         }
 
         // Background fill
         gfx.roundRect(-boxW / 2, -boxH / 2, boxW, boxH, 10)
-          .fill({ color: COLOR_CONTAINER_BG, alpha: isDimmed ? 0.3 : 0.9 });
+          .fill({ color: COLOR_CONTAINER_BG, alpha: isDimmed ? 0.5 : 0.9 });
 
         // Border
         gfx.roundRect(-boxW / 2, -boxH / 2, boxW, boxH, 10)
@@ -625,14 +649,14 @@ export class MapRenderer {
         const lbl = this.labelGfx.get(node.id);
         if (lbl) {
           lbl.position.set(node.x, node.y - boxH * 0.15);
-          lbl.alpha = isDimmed ? 0.1 : 0.95;
+          lbl.alpha = isDimmed ? 0.3 : 0.95;
         }
 
         // Tech label below main label
         const techLbl = this.containerTechLabels.get(node.id);
         if (techLbl) {
           techLbl.position.set(node.x, node.y + 4);
-          techLbl.alpha = isDimmed ? 0.05 : 0.6;
+          techLbl.alpha = isDimmed ? 0.2 : 0.6;
         }
 
         // Stats label
@@ -641,7 +665,7 @@ export class MapRenderer {
           const modCount = node.modified ? ' modified' : '';
           statLbl.text = `${node.childCount ?? 0} files${modCount}`;
           statLbl.position.set(node.x, node.y + boxH * 0.2);
-          statLbl.alpha = isDimmed ? 0.05 : 0.45;
+          statLbl.alpha = isDimmed ? 0.15 : 0.45;
         }
 
         continue; // Skip regular node rendering
@@ -659,7 +683,7 @@ export class MapRenderer {
       }
 
       // Hover highlight ring
-      if (isHovered) {
+      if (isHovered || isJourneyHighlighted) {
         gfx.circle(0, 0, r + 3).fill({ color: COLOR_HIGHLIGHT, alpha: 0.15 });
       }
 
@@ -712,13 +736,14 @@ export class MapRenderer {
       // Main shape
       const color = getNodeColor(node);
       let alpha = node.visited ? 0.9 : 0.3;
-      if (isDimmed) alpha *= 0.15;
+      if (isDimmed) alpha *= 0.4;
       if (isConnected) alpha = Math.max(alpha, 0.8);
+      if (isJourneyHighlighted) alpha = 1;
       if (isHovered) alpha = 1;
       if (isFocused) alpha = 1;
       if (hasIndicator) alpha = Math.max(alpha, 0.95);
 
-      const drawR = isHovered ? r * 1.2 : r;
+      const drawR = (isHovered || isJourneyHighlighted) ? r * 1.2 : r;
 
       if (isGroup && node.isExpanded) {
         gfx.circle(0, 0, drawR).fill({ color, alpha: alpha * 0.15 });
@@ -778,7 +803,32 @@ export class MapRenderer {
       const lbl = this.labelGfx.get(node.id);
       if (lbl) {
         lbl.position.set(node.x, node.y);
-        lbl.alpha = isDimmed ? 0.1 : 0.8;
+        lbl.alpha = isDimmed ? 0.3 : 0.8;
+      }
+
+      // Journey highlight label for file nodes (not groups/containers)
+      if (isJourneyHighlighted && !isGroup && !isContainer) {
+        let jLbl = this._journeyLabels.get(node.id);
+        if (!jLbl) {
+          jLbl = new Text({
+            text: node.label,
+            style: new TextStyle({
+              fontFamily: 'Courier New, monospace',
+              fontSize: 8,
+              fill: 0xffffff,
+              letterSpacing: 0.3,
+            }),
+          });
+          jLbl.anchor.set(0.5, 0);
+          this.world.addChild(jLbl);
+          this._journeyLabels.set(node.id, jLbl);
+        }
+        jLbl.visible = true;
+        jLbl.position.set(node.x, node.y + drawR + 3);
+        jLbl.alpha = 0.9;
+      } else {
+        const jLbl = this._journeyLabels.get(node.id);
+        if (jLbl) jLbl.visible = false;
       }
     }
 
@@ -1021,6 +1071,12 @@ export class MapRenderer {
     this.offset.y = my - (my - this.offset.y) * (newScale / this.scale);
     this.scale = newScale;
     if (this.onZoomChange) this.onZoomChange(newScale);
+    if (!this.panRafId) {
+      this.panRafId = requestAnimationFrame(() => {
+        this.panRafId = null;
+        this.render();
+      });
+    }
   };
 
   private onPointerDown = (e: PointerEvent) => {
@@ -1029,16 +1085,44 @@ export class MapRenderer {
     const hit = this.hitTest(e.clientX, e.clientY);
     const now = Date.now();
 
-    if (hit && hit.id === this.lastClickNodeId && now - this.lastClickTime < 350) {
-      if (hit.isGroupNode) {
-        // Groups: expand/collapse on double-click
-        if (this.onNodeDoubleClick) {
-          this.onNodeDoubleClick(hit);
+    if (now - this.lastClickTime < 350) {
+      if (hit && hit.id === this.lastClickNodeId) {
+        // Double-click on a node
+        if (hit.isGroupNode) {
+          if (this.onNodeDoubleClick) {
+            this.onNodeDoubleClick(hit);
+          }
         }
+        this.lastClickTime = 0;
+        this.lastClickNodeId = null;
+        return;
       }
-      this.lastClickTime = 0;
-      this.lastClickNodeId = null;
-      return;
+
+      if (!hit && !this.lastClickNodeId) {
+        // Double-click on empty space — toggle zoom in / reset
+        const rect = this.canvas!.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        if (this.lastEmptyDblClickZoomed) {
+          // Reset view
+          this.scale = 1;
+          this.offset = { x: 0, y: 0 };
+          this.lastEmptyDblClickZoomed = false;
+        } else {
+          // Zoom in 2x centered on click point
+          const newScale = Math.min(this.scale * 2, 10);
+          this.offset.x = mx - (mx - this.offset.x) * (newScale / this.scale);
+          this.offset.y = my - (my - this.offset.y) * (newScale / this.scale);
+          this.scale = newScale;
+          this.lastEmptyDblClickZoomed = true;
+        }
+        if (this.onZoomChange) this.onZoomChange(this.scale);
+        this.render();
+        this.lastClickTime = 0;
+        this.lastClickNodeId = null;
+        return;
+      }
     }
     this.lastClickTime = now;
     this.lastClickNodeId = hit?.id ?? null;
@@ -1058,9 +1142,18 @@ export class MapRenderer {
         const dy = e.clientY - this.pointerDownPos.y;
         if (dx * dx + dy * dy < 25) return;
       }
+      if (!this.dragMoved) {
+        this.canvas!.style.cursor = 'grabbing';
+      }
       this.dragMoved = true;
       this.offset.x = e.clientX - this.dragStart.x;
       this.offset.y = e.clientY - this.dragStart.y;
+      if (!this.panRafId) {
+        this.panRafId = requestAnimationFrame(() => {
+          this.panRafId = null;
+          this.render();
+        });
+      }
       return;
     }
 
@@ -1112,6 +1205,7 @@ export class MapRenderer {
     const wasDragging = this.dragging && this.dragMoved;
     this.dragging = false;
     this.dragMoved = false;
+    this.canvas!.style.cursor = 'grab';
 
     if (!wasDragging) {
       const hit = this.hitTest(e.clientX, e.clientY);

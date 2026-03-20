@@ -1,5 +1,6 @@
 import { useSessionStore } from '../../../stores/session-store.js';
 import { useConfigStore } from '../../../stores/config-store.js';
+import { useChatStore } from '../../../stores/chat-store.js';
 import { wsClient } from '../../../ws/ws-client.js';
 import { colors, fonts, alpha } from '../../../theme/tokens.js';
 import { AdvisorMessages } from '../pulse/AdvisorMessages.js';
@@ -272,7 +273,16 @@ function QuickTemplates() {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {/* Catch me up — advisor */}
         <button
-          onClick={() => wsClient.send({ kind: 'insight.requestSummary' })}
+          onClick={() => {
+            useChatStore.getState().addMessage({
+              id: `user-catchup-${Date.now()}`,
+              sessionId: '',
+              timestamp: Date.now(),
+              role: 'user',
+              text: 'Catch me up',
+            });
+            wsClient.send({ kind: 'insight.requestSummary' });
+          }}
           style={{
             padding: '10px 16px',
             borderRadius: 8,

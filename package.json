@@ -1,8 +1,15 @@
 {
   "name": "hudai",
   "version": "0.1.0",
-  "private": true,
-  "description": "Visual IDE for AI-powered development",
+  "description": "A command center for AI code agents",
+  "author": "Ido Kazma",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/idokazma/hudai-oss.git"
+  },
+  "homepage": "https://github.com/idokazma/hudai-oss",
+  "bugs": "https://github.com/idokazma/hudai-oss/issues",
   "bin": {
     "hudai": "./packages/server/bin/hudai.js"
   },

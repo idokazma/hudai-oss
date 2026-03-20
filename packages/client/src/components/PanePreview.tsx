@@ -13,13 +13,26 @@ import { CommandOverlay } from './Steering/CommandOverlay.js';
 function StreamTerminal() {
   const streamOutput = usePaneContentStore((s) => s.streamOutput);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+
+  const prevOutputLen = useRef(0);
 
   useEffect(() => {
-    // Auto-scroll to bottom on new output
-    if (scrollRef.current) {
+    if (!scrollRef.current) return;
+    const newLen = streamOutput?.length ?? 0;
+    // Only auto-scroll if user hasn't scrolled up
+    if (autoScrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+    prevOutputLen.current = newLen;
   }, [streamOutput]);
+
+  const handleScroll = () => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    // Only re-enable auto-scroll when user is very close to bottom (within 30px)
+    autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 30;
+  };
 
   if (!streamOutput) {
     return (
@@ -39,6 +52,7 @@ function StreamTerminal() {
   return (
     <div
       ref={scrollRef}
+      onScroll={handleScroll}
       style={{
         flex: 1,
         overflowY: 'auto',
@@ -61,7 +75,6 @@ export function PanePreview() {
   const tmuxTarget = useSessionStore((s) => s.session.tmuxTarget);
   const sessionMode = useSessionStore((s) => s.session.mode);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const clipRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -115,7 +128,9 @@ export function PanePreview() {
     // Override wheel events so they always scroll the xterm.js buffer
     // instead of being forwarded as mouse reports to tmux/Claude Code
     term.attachCustomWheelEventHandler((ev) => {
-      const lines = ev.deltaY > 0 ? 3 : -3;
+      // deltaY > 0 = scroll down, deltaY < 0 = scroll up
+      // Increase scroll speed for smoother navigation
+      const lines = ev.deltaY > 0 ? 5 : -5;
       term.scrollLines(lines);
       return false;
     });
@@ -199,32 +214,7 @@ export function PanePreview() {
     });
     resizeObserver.observe(containerRef.current);
 
-    // Trim trailing empty lines — clip via a wrapper so xterm's own sizing is unaffected
-    const trimEmpty = () => {
-      if (!clipRef.current || !containerRef.current) return;
-      const buf = term.buffer.active;
-      let lastNonEmpty = 0;
-      for (let i = term.rows - 1; i >= 0; i--) {
-        const line = buf.getLine(buf.baseY + i);
-        if (line && line.translateToString(true).trim().length > 0) {
-          lastNonEmpty = i + 1;
-          break;
-        }
-      }
-      const visibleRows = Math.max(lastNonEmpty, buf.cursorY + 1);
-      if (visibleRows >= term.rows) {
-        clipRef.current.style.height = '';
-        return;
-      }
-      const screen = containerRef.current.querySelector('.xterm-screen') as HTMLElement;
-      if (!screen) return;
-      const cellHeight = screen.clientHeight / term.rows;
-      clipRef.current.style.height = `${Math.ceil(visibleRows * cellHeight)}px`;
-    };
-    const renderDisposable = term.onRender(() => trimEmpty());
-
     return () => {
-      renderDisposable.dispose();
       resizeObserver.disconnect();
       ws.close();
       term.dispose();
@@ -268,12 +258,7 @@ export function PanePreview() {
             overflowX: 'hidden',
           }}
         >
-          <div
-            ref={clipRef}
-            style={{ flexShrink: 0, overflow: 'hidden' }}
-          >
-            <div ref={containerRef} />
-          </div>
+          <div ref={containerRef} style={{ flexShrink: 0 }} />
         </div>
       )}
       {(tmuxTarget || sessionMode === 'stream') && <CommandOverlay />}

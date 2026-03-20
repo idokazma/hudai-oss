@@ -3,6 +3,7 @@ import { StatusRing } from '../pulse/StatusRing.js';
 import { ActionCardStack } from '../pulse/ActionCardStack.js';
 import { PlanProgress } from '../pulse/PlanProgress.js';
 import { AdvisorMessages } from '../pulse/AdvisorMessages.js';
+import { useChatStore } from '../../../stores/chat-store.js';
 import { wsClient } from '../../../ws/ws-client.js';
 import { colors, fonts, alpha } from '../../../theme/tokens.js';
 
@@ -64,7 +65,16 @@ export function PulseTab() {
         }}
       >
         <button
-          onClick={() => wsClient.send({ kind: 'insight.requestSummary' })}
+          onClick={() => {
+            useChatStore.getState().addMessage({
+              id: `user-catchup-${Date.now()}`,
+              sessionId: '',
+              timestamp: Date.now(),
+              role: 'user',
+              text: 'Catch me up',
+            });
+            wsClient.send({ kind: 'insight.requestSummary' });
+          }}
           style={{
             height: 40,
             padding: '0 14px',

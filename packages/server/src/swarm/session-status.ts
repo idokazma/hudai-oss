@@ -28,7 +28,7 @@ const PERMISSION_LIKELY_TOOLS = new Set([
 ]);
 
 /** Stale timeout: if a tool is pending and JSONL hasn't grown in this long, assume permission/stall */
-const STALE_TOOL_TIMEOUT_MS = 5_000;
+const STALE_TOOL_TIMEOUT_MS = 15_000;
 /** Idle timeout: if last entry was text-only assistant and no new entry in this long, assume idle */
 const IDLE_TIMEOUT_MS = 5_000;
 
@@ -96,6 +96,11 @@ export class StatusDetector {
     this.potentiallyIdle = false;
 
     if (entry.type === 'user') {
+      // Skip system injections (task-notification, system-reminder)
+      const content = entry.message?.content;
+      if (typeof content === 'string' && (content.trimStart().startsWith('<task-notification') || content.trimStart().startsWith('<system-reminder'))) {
+        return;
+      }
       this.processUserEntry(entry);
     } else if (entry.type === 'assistant') {
       this.processAssistantEntry(entry);
@@ -110,11 +115,21 @@ export class StatusDetector {
 
     // Check for tool_result blocks (user entries carry tool results)
     if (Array.isArray(content)) {
+      let hasToolResult = false;
       for (const block of content) {
         if (block.type === 'tool_result' && 'tool_use_id' in block) {
           this.pendingTools.delete(block.tool_use_id);
+          hasToolResult = true;
         }
       }
+      // If this is a plain user message (no tool_results), the conversation
+      // has moved on — any pending tools from earlier are abandoned
+      if (!hasToolResult) {
+        this.pendingTools.clear();
+      }
+    } else {
+      // Plain text user entry — clear any stale pending tools
+      this.pendingTools.clear();
     }
 
     // User entry means agent is processing
@@ -213,8 +228,8 @@ export class StatusDetector {
 
   /**
    * Periodic check for stale state.
-   * - Pending tool with no result for 5s → likely waiting_permission
-   * - Text-only assistant with no follow-up for 5s → waiting_input
+   * - Pending tool with no result for stale timeout → likely waiting_permission
+   * - Text-only assistant with no follow-up for idle timeout → waiting_input
    */
   private checkStale(): void {
     if (this.hookOverride) return; // hooks are authoritative

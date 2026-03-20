@@ -16,11 +16,12 @@ import { HumanShell } from '../Mobile/views/HumanShell.js';
 import { DeepLeftPanel } from '../DeepDiveMode/DeepLeftPanel.js';
 import { ConfigSlideOver } from '../ConfigSlideOver/ConfigSlideOver.js';
 import { SpawnModal } from '../shared/SpawnModal.js';
+import { SwarmOverview } from './SwarmOverview.js';
 import { ThreadDetailView } from './ThreadDetailView.js';
 import { useThreadStore } from '../../stores/thread-store.js';
 import { useConfigPanelStore } from '../../stores/config-panel-store.js';
 import { wsClient } from '../../ws/ws-client.js';
-import type { ServerMessage } from '@hudai/shared';
+import type { ServerMessage, SwarmSnapshot, AgentActivity } from '@hudai/shared';
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   idle: { label: 'IDLE', color: colors.status.successLight },
@@ -53,13 +54,19 @@ export function WorkMode() {
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
   const [spawnOpen, setSpawnOpen] = useState(false);
+  const [swarmOpen, setSwarmOpen] = useState(false);
+  const [dropdownAgents, setDropdownAgents] = useState<SwarmSnapshot[]>([]);
   const sessionDropdownRef = useRef<HTMLDivElement>(null);
+  const swarmRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const unsub = wsClient.onMessage((msg: ServerMessage) => {
       if (msg.kind === 'service.status') setServices(msg.services);
       if (msg.kind === 'settings.keys' || msg.kind === 'settings.saved') {
         setTelegramConnected(!!msg.keys.telegramBotToken);
+      }
+      if (msg.kind === 'swarm.status') {
+        setDropdownAgents(msg.sessions || []);
       }
     });
     return () => { unsub(); };
@@ -78,7 +85,7 @@ export function WorkMode() {
   }, [sessionDropdownOpen]);
 
   const openSessionDropdown = useCallback(() => {
-    wsClient.send({ kind: 'panes.list' });
+    wsClient.send({ kind: 'swarm.status' });
     setSessionDropdownOpen((v) => !v);
   }, []);
 
@@ -232,119 +239,44 @@ export function WorkMode() {
           </button>
 
           {sessionDropdownOpen && (
-            <div style={{
-              position: 'absolute',
-              top: '100%',
-              left: 0,
-              marginTop: 4,
-              minWidth: 220,
-              background: colors.bg.panel,
-              border: `1px solid ${colors.border.medium}`,
-              borderRadius: 6,
-              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-              zIndex: 200,
-              padding: '4px 0',
-            }}>
-              {panes.map((pane) => {
-                const isCurrent = pane.id === session.tmuxTarget;
-                return (
-                  <button
-                    key={pane.id}
-                    onClick={() => {
-                      if (!isCurrent) {
-                        wsClient.send({ kind: 'session.attach', tmuxTarget: pane.id });
-                      }
-                      setSessionDropdownOpen(false);
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      width: '100%',
-                      padding: '6px 12px',
-                      border: 'none',
-                      background: isCurrent ? alpha(colors.accent.blue, 0.12) : 'transparent',
-                      color: isCurrent ? colors.accent.blueLight : colors.text.secondary,
-                      fontSize: 12,
-                      fontFamily: fonts.mono,
-                      cursor: isCurrent ? 'default' : 'pointer',
-                      textAlign: 'left',
-                      outline: 'none',
-                    }}
-                    onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
-                    onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = 'transparent'; }}
-                  >
-                    <div style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: '50%',
-                      background: isCurrent ? colors.accent.blue : colors.text.muted,
-                    }} />
-                    <span style={{ flex: 1 }}>{pane.id}</span>
-                    {pane.title && pane.title !== pane.id && (
-                      <span style={{ fontSize: 10, color: colors.text.muted }}>{pane.title}</span>
-                    )}
-                  </button>
-                );
-              })}
-              {panes.length === 0 && (
-                <div style={{ padding: '8px 12px', fontSize: 12, color: colors.text.muted, fontFamily: fonts.mono }}>
-                  No tmux panes found
-                </div>
-              )}
-              <div style={{ height: 1, background: colors.border.subtle, margin: '4px 0' }} />
-              <button
-                onClick={() => {
-                  setSessionDropdownOpen(false);
-                  setSpawnOpen(true);
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  width: '100%',
-                  padding: '6px 12px',
-                  border: 'none',
-                  background: 'transparent',
-                  color: colors.accent.blueLight,
-                  fontSize: 12,
-                  fontFamily: fonts.mono,
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  outline: 'none',
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              >
-                + New Agent
-              </button>
-              <button
-                onClick={() => {
-                  wsClient.send({ kind: 'session.detach' });
-                  setSessionDropdownOpen(false);
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  width: '100%',
-                  padding: '6px 12px',
-                  border: 'none',
-                  background: 'transparent',
-                  color: colors.status.warning,
-                  fontSize: 12,
-                  fontFamily: fonts.mono,
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  outline: 'none',
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              >
-                Detach
-              </button>
-            </div>
+            <DropdownSessionList
+              agents={dropdownAgents}
+              currentTarget={session.tmuxTarget}
+              onSwitch={(target) => {
+                wsClient.send({ kind: 'session.attach', tmuxTarget: target });
+                setSessionDropdownOpen(false);
+              }}
+              onSpawn={() => { setSessionDropdownOpen(false); setSpawnOpen(true); }}
+              onDetach={() => { wsClient.send({ kind: 'session.detach' }); setSessionDropdownOpen(false); }}
+              onShowAll={() => { setSessionDropdownOpen(false); setSwarmOpen(true); }}
+            />
           )}
+        </div>
+
+        {/* Swarm overview button */}
+        <div ref={swarmRef} style={{ position: 'relative' }}>
+          <button
+            onClick={() => setSwarmOpen(!swarmOpen)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '2px 8px',
+              borderRadius: 4,
+              background: swarmOpen ? alpha(colors.accent.blue, 0.15) : 'transparent',
+              border: `1px solid ${swarmOpen ? alpha(colors.accent.blue, 0.3) : colors.border.subtle}`,
+              cursor: 'pointer',
+              outline: 'none',
+              fontSize: 10,
+              fontFamily: fonts.mono,
+              fontWeight: 500,
+              color: swarmOpen ? colors.accent.blueLight : colors.text.muted,
+            }}
+            title="Show all agents"
+          >
+            ⊞ All
+          </button>
+          {/* SwarmOverview now renders in center viewport, not here */}
         </div>
 
         {/* Task label */}
@@ -558,7 +490,7 @@ export function WorkMode() {
       {/* ── Center viewport ── */}
       <div style={{ overflow: 'hidden', minHeight: 0, position: 'relative' }}>
         <div style={{ position: 'absolute', inset: 0 }}>
-          {showPreview && previewUrl ? <BrowserPreview /> : <CodebaseMap />}
+          {swarmOpen ? <SwarmOverview onClose={() => setSwarmOpen(false)} /> : showPreview && previewUrl ? <BrowserPreview /> : <CodebaseMap />}
         </div>
         {selectedThreadId && <ThreadDetailView />}
       </div>
@@ -643,6 +575,134 @@ export function WorkMode() {
 
       <ConfigSlideOver />
       <SpawnModal open={spawnOpen} onClose={() => setSpawnOpen(false)} />
+    </div>
+  );
+}
+
+const DROPDOWN_ACTIVITY: Record<string, { label: string; color: string }> = {
+  working: { label: 'Working', color: colors.accent.primary },
+  waiting_input: { label: 'Idle', color: colors.text.muted },
+  waiting_permission: { label: 'Permission', color: colors.status.warning },
+  waiting_answer: { label: 'Question', color: colors.accent.blueLight },
+};
+
+function DropdownSessionList({ agents, currentTarget, onSwitch, onSpawn, onDetach, onShowAll }: {
+  agents: SwarmSnapshot[];
+  currentTarget?: string;
+  onSwitch: (target: string) => void;
+  onSpawn: () => void;
+  onDetach: () => void;
+  onShowAll: () => void;
+}) {
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '100%',
+      left: 0,
+      marginTop: 4,
+      minWidth: 260,
+      background: colors.bg.panel,
+      border: `1px solid ${colors.border.medium}`,
+      borderRadius: 6,
+      boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+      zIndex: 200,
+      padding: '4px 0',
+    }}>
+      {agents.map((agent) => {
+        const target = agent.tmuxTarget || agent.projectPath;
+        const isCurrent = agent.isAttached || target === currentTarget;
+        const activity = agent.activity || 'waiting_input';
+        const activityInfo = DROPDOWN_ACTIVITY[activity] || { label: '...', color: colors.text.dimmed };
+
+        return (
+          <button
+            key={agent.sessionId || target}
+            onClick={() => { if (!isCurrent) onSwitch(target); }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '6px 12px',
+              border: 'none',
+              background: isCurrent ? alpha(colors.accent.blue, 0.12) : 'transparent',
+              color: isCurrent ? colors.accent.blueLight : colors.text.secondary,
+              fontSize: 11,
+              fontFamily: fonts.mono,
+              cursor: isCurrent ? 'default' : 'pointer',
+              textAlign: 'left',
+              outline: 'none',
+            }}
+            onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+            onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = isCurrent ? alpha(colors.accent.blue, 0.12) : 'transparent'; }}
+          >
+            <div style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: activityInfo.color,
+              boxShadow: activity === 'working' ? `0 0 6px ${alpha(activityInfo.color, 0.5)}` : 'none',
+              flexShrink: 0,
+            }} />
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {agent.projectName}
+            </span>
+            <span style={{
+              fontSize: 9,
+              fontWeight: 600,
+              color: activityInfo.color,
+              padding: '1px 5px',
+              borderRadius: 3,
+              background: alpha(activityInfo.color, 0.12),
+              flexShrink: 0,
+            }}>
+              {activityInfo.label}
+            </span>
+          </button>
+        );
+      })}
+      {agents.length === 0 && (
+        <div style={{ padding: '8px 12px', fontSize: 11, color: colors.text.muted, fontFamily: fonts.mono }}>
+          No agents found
+        </div>
+      )}
+      <div style={{ height: 1, background: colors.border.subtle, margin: '4px 0' }} />
+      <button
+        onClick={onShowAll}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '6px 12px',
+          border: 'none', background: 'transparent', color: colors.text.muted,
+          fontSize: 11, fontFamily: fonts.mono, cursor: 'pointer', textAlign: 'left', outline: 'none',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+      >
+        Show all details...
+      </button>
+      <button
+        onClick={onSpawn}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '6px 12px',
+          border: 'none', background: 'transparent', color: colors.accent.blueLight,
+          fontSize: 11, fontFamily: fonts.mono, cursor: 'pointer', textAlign: 'left', outline: 'none',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+      >
+        + New Agent
+      </button>
+      <button
+        onClick={onDetach}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '6px 12px',
+          border: 'none', background: 'transparent', color: colors.status.warning,
+          fontSize: 11, fontFamily: fonts.mono, cursor: 'pointer', textAlign: 'left', outline: 'none',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+      >
+        Detach
+      </button>
     </div>
   );
 }

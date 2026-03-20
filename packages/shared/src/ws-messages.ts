@@ -56,6 +56,8 @@ export interface SwarmSnapshot {
   tmuxTarget?: string;
   /** How the session was discovered */
   source?: 'tmux' | 'jsonl';
+  /** Last meaningful agent prose (truncated) */
+  lastMessage?: string;
 }
 
 // Server -> Client

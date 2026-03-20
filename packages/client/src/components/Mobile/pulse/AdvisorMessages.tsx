@@ -18,16 +18,16 @@ export function AdvisorMessages({ maxMessages = 5 }: { maxMessages?: number }) {
   const typing = useChatStore((s) => s.typing);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Only show advisor messages (not actionable/respondable — those go in ActionCardStack)
-  const advisorMessages = messages
-    .filter((m) => m.role === 'advisor' && !m.actionable && !m.respondable)
+  // Show user + advisor messages (not actionable/respondable — those go in ActionCardStack)
+  const chatMessages = messages
+    .filter((m) => (m.role === 'user' || (m.role === 'advisor' && !m.actionable && !m.respondable)))
     .slice(-maxMessages);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [advisorMessages.length, typing]);
+  }, [chatMessages.length, typing]);
 
-  if (advisorMessages.length === 0 && !typing) return null;
+  if (chatMessages.length === 0 && !typing) return null;
 
   return (
     <div style={{ padding: '0 16px' }}>
@@ -55,8 +55,55 @@ export function AdvisorMessages({ maxMessages = 5 }: { maxMessages?: number }) {
           WebkitOverflowScrolling: 'touch',
         }}
       >
-        {advisorMessages.map((msg) => {
+        {chatMessages.map((msg) => {
+          const isUser = msg.role === 'user';
           const sevColor = msg.severity ? SEVERITY_COLORS[msg.severity] : undefined;
+
+          if (isUser) {
+            return (
+              <div
+                key={msg.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                }}
+              >
+                <div
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 10,
+                    background: alpha(colors.accent.primary, 0.15),
+                    border: `1px solid ${alpha(colors.accent.primary, 0.25)}`,
+                    maxWidth: '85%',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontFamily: fonts.body,
+                      color: colors.text.primary,
+                      lineHeight: 1.4,
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {msg.text}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontFamily: fonts.mono,
+                      color: colors.text.dimmed,
+                      textAlign: 'right',
+                      marginTop: 2,
+                    }}
+                  >
+                    {formatTime(msg.timestamp)}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div
               key={msg.id}
