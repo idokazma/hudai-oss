@@ -537,15 +537,6 @@ async function attachToPane(tmuxTarget: string) {
           },
         } as AVPEvent);
 
-        // Auto-approve if tool+command matches an allowed permission rule
-        if (cachedConfig && agent) {
-          const result = matchPermission(toolName, { command: commandFirstLine }, cachedConfig.permissions);
-          if (result.status === 'allowed') {
-            console.log(`[auto-approve] ${toolName}: ${commandStr.slice(0, 80)} (matched: ${result.rule})`);
-            agent.write('y');
-            agent.sendEnter();
-          }
-        }
       }
 
       updateSessionState({
@@ -2172,22 +2163,21 @@ fastify.register(async function (app) {
     // Hide tmux status bar — Hudai provides its own chrome
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" status off`, { stdio: 'ignore' }); } catch {}
 
-    // Send tmux scrollback history so xterm.js has content to scroll through.
-    // Uses -e for escape sequences (colors), -J to join wrapped lines, \r\n for xterm.
+    // Inject scrollback history from tmux BEFORE starting the PTY stream.
+    // We capture history, send it, then spawn the PTY — sequential, no overlap.
     try {
       const history = execSync(
-        `${tmuxBin} capture-pane -t "${target}" -e -J -p -S -2000`,
+        `${tmuxBin} capture-pane -t "${target}" -e -p -S -2000`,
         { encoding: 'utf-8', maxBuffer: 1024 * 1024 }
       );
-      if (history && socket.readyState === 1) {
-        // Convert \n to \r\n for proper xterm rendering
+      if (history.trim() && socket.readyState === 1) {
         socket.send(history.replace(/\n/g, '\r\n'));
       }
     } catch {
       // capture-pane failed — continue without history
     }
 
-    // Spawn tmux attach inside a real PTY
+    // Spawn tmux attach inside a real PTY (after history has been sent)
     const ptyProcess = nodePty.spawn(tmuxBin, ['attach-session', '-t', target], {
       cols: 80,
       rows: 24,
@@ -2198,10 +2188,7 @@ fastify.register(async function (app) {
     // normal buffer (preserving scrollback) and wheel events scroll the buffer.
     const STRIP_RE = /\x1b\[\?(9|47|1000|1002|1003|1004|1005|1006|1015|1047|1049)[hl]/g;
 
-    // Batch PTY output to reduce flicker. Claude Code's TUI sends screen
-    // updates across multiple chunks (e.g. diff content, then cursor reset).
-    // Without batching, xterm renders intermediate states as visible flicker.
-    // We collect chunks and flush once per frame (~16ms).
+    // Batch PTY output to reduce flicker (~16ms per frame).
     let ptyBuffer = '';
     let ptyFlushTimer: ReturnType<typeof setTimeout> | null = null;
     const flushPty = () => {
