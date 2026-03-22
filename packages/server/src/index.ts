@@ -32,7 +32,6 @@ import { AgentHost } from './agent/agent-host.js';
 import { StreamCommandHandler } from './agent/stream-command-handler.js';
 import { buildAgentConfig } from './config/config-scanner.js';
 import { writePermissionToggle } from './config/settings-reader.js';
-import { matchPermission } from './config/permission-matcher.js';
 import { getBuiltinSkill, BUILTIN_SKILLS } from './config/builtin-skills.js';
 import { SubagentWatcher } from './transcript/subagent-watcher.js';
 import { PlanFileWatcher } from './plans/plan-file-watcher.js';
@@ -334,6 +333,46 @@ function handleEvent(event: AVPEvent) {
     });
   }
 
+  // JSONL-based permission detection: when a tool_use arrives with prompted status,
+  // the agent is waiting for user approval. Much more reliable than terminal scraping.
+  if (event.permission?.status === 'prompted' && event.source === 'transcript') {
+    const data = (event as any).data;
+    const toolName = event.type === 'shell.run' ? 'Bash' :
+      event.type === 'file.read' ? 'Read' :
+      event.type === 'file.edit' ? 'Edit' :
+      event.type === 'file.create' ? 'Write' :
+      event.type === 'search.grep' ? 'Grep' :
+      event.type === 'search.glob' ? 'Glob' : 'Tool';
+    const detail = toolName === 'Bash'
+      ? `${toolName}: ${(data.command || '').slice(0, 300)}`
+      : `${toolName}: ${(data.path || data.pattern || '').slice(0, 300)}`;
+
+    updateSessionState({
+      agentActivity: 'waiting_permission',
+      agentActivityDetail: detail,
+    });
+
+    // Also emit permission.prompt event for tracking/suggestions
+    handleEvent({
+      id: crypto.randomUUID(),
+      sessionId: event.sessionId,
+      timestamp: Date.now(),
+      category: 'control',
+      type: 'permission.prompt',
+      source: 'transcript',
+      data: { tool: toolName, command: detail },
+    } as AVPEvent);
+  }
+
+  // Tool completion clears waiting_permission if we were waiting
+  if (event.type === 'tool.complete' && sessionState.agentActivity === 'waiting_permission') {
+    updateSessionState({
+      agentActivity: 'working',
+      agentActivityDetail: undefined,
+      agentActivityOptions: undefined,
+    });
+  }
+
   // Track permission prompts for suggestions
   if (event.type === 'permission.prompt') {
     const tool = (event as any).data.tool;
@@ -497,54 +536,33 @@ async function attachToPane(tmuxTarget: string) {
       broadcast({ kind: 'pane.content', content, caret });
     }
 
-    // ── Fast-path activity detection via pane-analyzer ──
-    // Runs on every capture-pane poll (~500ms) for instant permission/question detection.
-    // Hooks and JSONL monitor can override but pane-analyzer is the fastest signal.
+    // ── Pane-analyzer: idle detection only ──
+    // Permission and question detection come from JSONL (structured, reliable).
+    // Pane-analyzer only detects idle (❯ prompt) and working states.
     const analysis = analyzePaneContent(content);
 
-    const activityChanged = analysis.activity !== sessionState.agentActivity;
-    const detailChanged = analysis.detail !== sessionState.agentActivityDetail;
-
     // Reset idle flag when agent starts working again
-    if (activityChanged && sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
+    if (sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
       idleNotified = false;
     }
 
-    if (activityChanged || (detailChanged && (analysis.activity === 'waiting_answer' || analysis.activity === 'waiting_permission'))) {
-      if (analysis.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
-        idleNotified = true;
-      }
-
-      // Emit permission event for tracking
-      if (analysis.activity === 'waiting_permission' && sessionState.agentActivity !== 'waiting_permission') {
-        const detailStr = analysis.detail || '';
-        const toolName = detailStr.split(':')[0]?.trim() || 'Unknown';
-        // Command may be multiline (command + description); use full text for matching
-        const commandStr = detailStr.includes(':') ? detailStr.slice(detailStr.indexOf(':') + 1).trim() : '';
-        // For Bash matching, use the first line (actual command, not description)
-        const commandFirstLine = commandStr.split('\n')[0]?.trim() || commandStr;
-
-        handleEvent({
-          id: crypto.randomUUID(),
-          sessionId: sessionState.sessionId,
-          timestamp: Date.now(),
-          category: 'control',
-          type: 'permission.prompt',
-          source: 'tmux',
-          data: {
-            tool: toolName,
-            command: commandStr || 'Permission requested',
-          },
-        } as AVPEvent);
-
-      }
-
+    if (analysis.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
+      // Agent went idle — update state
+      idleNotified = true;
       updateSessionState({
-        agentActivity: analysis.activity,
+        agentActivity: 'waiting_input',
         agentActivityDetail: analysis.detail,
-        agentActivityOptions: analysis.options,
+        agentActivityOptions: undefined,
+      });
+    } else if (analysis.activity === 'working' && sessionState.agentActivity === 'waiting_input') {
+      // Agent resumed working from idle
+      updateSessionState({
+        agentActivity: 'working',
+        agentActivityDetail: undefined,
+        agentActivityOptions: undefined,
       });
     }
+    // Do NOT override waiting_permission or waiting_answer — those are set by JSONL
 
     // Stale detection safety net
     const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
