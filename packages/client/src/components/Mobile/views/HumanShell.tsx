@@ -32,7 +32,10 @@ export function HumanShell() {
         if (text) result.push({ kind: 'human', text, ts: ev.timestamp });
       } else if (ev.type === 'raw.output') {
         const text = ((ev as any).data?.text || '').trim();
-        if (text) result.push({ kind: 'agent', text, ts: ev.timestamp });
+        // Skip tool-use lines like "TaskCreate(args)" emitted by the parser
+        if (text && !/^[A-Z]\w+\(/.test(text)) {
+          result.push({ kind: 'agent', text, ts: ev.timestamp });
+        }
       }
     }
     return result;
