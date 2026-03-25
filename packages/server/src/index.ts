@@ -1978,9 +1978,13 @@ fastify.register(async function (app) {
                 snapshots.push(snap);
 
                 // Always queue JSONL file lookup for status + metrics
+                // Use session-specific JSONL path to avoid deduplication across same-project sessions
+                const discoveredSession = swarmService.getScanner().getSessions().find(s => s.sessionId === agent.sessionId);
                 jsonlStatusPromises.push({
                   snap,
-                  promise: swarmService.getStatusFromJsonl(agent.projectPath),
+                  promise: discoveredSession
+                    ? swarmService.getStatusFromJsonlPath(discoveredSession.jsonlPath)
+                    : swarmService.getStatusFromJsonl(agent.projectPath),
                 });
               }
             }
