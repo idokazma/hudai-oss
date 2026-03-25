@@ -231,6 +231,33 @@ export class SessionScanner {
   }
 
   /**
+   * Resolve a PID to its Claude Code session info by reading ~/.claude/sessions/{pid}.json.
+   * Returns the sessionId and resolves the JSONL path from the projects directory.
+   */
+  async getSessionForPid(pid: number): Promise<{ sessionId: string; jsonlPath: string; cwd: string } | null> {
+    try {
+      const sessionFile = join(CLAUDE_DIR, 'sessions', `${pid}.json`);
+      const content = await readFile(sessionFile, 'utf-8');
+      const data = JSON.parse(content);
+      if (!data.sessionId || !data.cwd) return null;
+
+      // Find the JSONL file: scan project dirs for {sessionId}.jsonl
+      const slugDirs = await this.listProjectDirs();
+      for (const slug of slugDirs) {
+        const jsonlPath = join(PROJECTS_DIR, slug, `${data.sessionId}.jsonl`);
+        try {
+          await stat(jsonlPath);
+          return { sessionId: data.sessionId, jsonlPath, cwd: data.cwd };
+        } catch { /* not in this dir */ }
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * List project slug directories in ~/.claude/projects/
    */
   private async listProjectDirs(): Promise<string[]> {

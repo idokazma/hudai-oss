@@ -1837,6 +1837,7 @@ fastify.register(async function (app) {
             // Merge SwarmRegistry (tmux-based, DB-enriched) with SwarmService (JSONL-discovered)
             const snapshots = swarmRegistry.getSnapshots();
             const swarmAgents = swarmService.getSwarmStatus();
+            const consumedAgentIds = new Set<string>();
 
             // Enrich snapshots with SwarmService data + sessionState for attached session
             // For sessions without live JSONL monitoring, read their JSONL to determine status
@@ -1873,35 +1874,74 @@ fastify.register(async function (app) {
                 continue;
               }
 
-              // Try SwarmService (live JSONL monitor)
-              const agent = swarmAgents.find((a) =>
-                a.sessionId === snap.sessionId || a.tmuxTarget === snap.projectPath
-              );
-              if (agent && (agent.status.activity as string) !== 'unknown') {
-                snap.activity = snap.activity || agent.status.activity;
-                snap.activityDetail = snap.activityDetail || agent.status.detail;
-                snap.currentFile = snap.currentFile || agent.status.currentFile;
-                snap.model = agent.metrics.model;
-                snap.tokensUsed = agent.metrics.tokensUsed;
-                snap.turnCount = agent.metrics.turnCount;
-                snap.toolCount = agent.metrics.toolCount;
-                snap.tmuxTarget = snap.tmuxTarget || agent.tmuxTarget;
-                snap.source = agent.source;
-              } else {
-                // No live JSONL monitor — try JSONL file lookup
-                // Resolve tmux pane CWD to get actual project path (tmux session name may differ from project dir)
-                let lookupName = snap.projectName;
-                const tmuxTarget = snap.tmuxTarget || snap.projectPath;
-                if (tmuxTarget.includes(':')) {
-                  try {
-                    const cwd = AgentProcess.getPaneCwd(tmuxTarget);
-                    if (cwd) lookupName = cwd;
-                  } catch { /* tmux lookup failed, use projectName */ }
+              // Strategy: PID-based JSONL resolution first (reliable 1:1 mapping),
+              // then fall back to SwarmService agents, then project-name JSONL lookup
+              const tmuxTarget = snap.tmuxTarget || snap.projectPath;
+              let resolved = false;
+
+              // Try PID-based resolution for tmux panes (most reliable for multi-agent same-project)
+              if (tmuxTarget.includes(':')) {
+                const sessionInfo = AgentProcess.getClaudeSessionForPane(tmuxTarget);
+                if (sessionInfo) {
+                  const scanner = swarmService.getScanner();
+                  jsonlStatusPromises.push({
+                    snap,
+                    promise: scanner.getSessionForPid(sessionInfo.pid).then(result => {
+                      if (result) {
+                        return swarmService.getStatusFromJsonlPath(result.jsonlPath);
+                      }
+                      return swarmService.getStatusFromJsonl(snap.projectName);
+                    }),
+                  });
+                  resolved = true;
                 }
-                jsonlStatusPromises.push({
-                  snap,
-                  promise: swarmService.getStatusFromJsonl(lookupName),
-                });
+              }
+
+              // Fallback: try SwarmService agents (live JSONL monitor)
+              if (!resolved) {
+                let agent = swarmAgents.find((a) =>
+                  !consumedAgentIds.has(a.sessionId) &&
+                  (a.sessionId === snap.sessionId || a.tmuxTarget === snap.projectPath)
+                );
+
+                if (!agent) {
+                  let paneCwd: string | undefined;
+                  if (tmuxTarget.includes(':')) {
+                    try { paneCwd = AgentProcess.getPaneCwd(tmuxTarget); } catch { /* ignore */ }
+                  }
+                  if (paneCwd) {
+                    agent = swarmAgents.find((a) =>
+                      !consumedAgentIds.has(a.sessionId) && a.projectPath === paneCwd
+                    );
+                  }
+                }
+
+                if (agent && (agent.status.activity as string) !== 'unknown') {
+                  consumedAgentIds.add(agent.sessionId);
+                  snap.activity = snap.activity || agent.status.activity;
+                  snap.activityDetail = snap.activityDetail || agent.status.detail;
+                  snap.currentFile = snap.currentFile || agent.status.currentFile;
+                  snap.model = agent.metrics.model;
+                  snap.tokensUsed = agent.metrics.tokensUsed;
+                  snap.turnCount = agent.metrics.turnCount;
+                  snap.toolCount = agent.metrics.toolCount;
+                  snap.tmuxTarget = snap.tmuxTarget || agent.tmuxTarget;
+                  snap.lastMessage = snap.lastMessage || agent.lastMessage;
+                  snap.source = agent.source;
+                } else {
+                  // Last resort: project-name JSONL lookup
+                  let lookupName = snap.projectName;
+                  if (tmuxTarget.includes(':')) {
+                    try {
+                      const cwd = AgentProcess.getPaneCwd(tmuxTarget);
+                      if (cwd) lookupName = cwd;
+                    } catch { /* tmux lookup failed */ }
+                  }
+                  jsonlStatusPromises.push({
+                    snap,
+                    promise: swarmService.getStatusFromJsonl(lookupName),
+                  });
+                }
               }
             }
 
@@ -2005,7 +2045,27 @@ fastify.register(async function (app) {
                 } catch { /* skip */ }
               }
 
-              // Strategy 3: JSONL file (for sessions not in event store — JSONL-only discovered sessions)
+              // Strategy 3: PID-based JSONL lookup (for agents sharing a project — each gets its own JSONL)
+              if (!snap.lastMessage) {
+                const paneTarget = snap.tmuxTarget || snap.projectPath;
+                if (paneTarget.includes(':')) {
+                  try {
+                    const sessionInfo = AgentProcess.getClaudeSessionForPane(paneTarget);
+                    if (sessionInfo) {
+                      const scanner = swarmService.getScanner();
+                      const result = await scanner.getSessionForPid(sessionInfo.pid);
+                      if (result) {
+                        const jsonlResult = await swarmService.getStatusFromJsonlPath(result.jsonlPath);
+                        if (jsonlResult?.lastMessage) {
+                          snap.lastMessage = jsonlResult.lastMessage;
+                        }
+                      }
+                    }
+                  } catch { /* PID resolution failed */ }
+                }
+              }
+
+              // Strategy 4: JSONL file by project name (fallback for sessions not resolved by PID)
               if (!snap.lastMessage && snap.source === 'jsonl') {
                 try {
                   const jsonlResult = await swarmService.getStatusFromJsonl(snap.projectPath);

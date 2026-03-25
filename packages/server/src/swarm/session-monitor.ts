@@ -42,6 +42,7 @@ export class SessionMonitor extends EventEmitter {
     lastActivity: 0,
   };
   private _active = false;
+  private _lastMessage: string | undefined;
 
   constructor(
     private sessionId: string,
@@ -57,6 +58,10 @@ export class SessionMonitor extends EventEmitter {
 
   get active(): boolean {
     return this._active;
+  }
+
+  get lastMessage(): string | undefined {
+    return this._lastMessage;
   }
 
   get transcriptDirectory(): string | null {
@@ -105,6 +110,13 @@ export class SessionMonitor extends EventEmitter {
         for (const block of entry.message!.content!) {
           if ((block as any).type === 'tool_use') {
             this.metrics.toolCount++;
+          }
+          if ((block as any).type === 'text') {
+            const text = ((block as any).text || '').trim();
+            if (text.length >= 20 && !text.startsWith('<system-reminder') && !text.startsWith('<task-notification')) {
+              const firstLine = text.split('\n').find((l: string) => l.trim().length > 10)?.trim();
+              this._lastMessage = (firstLine || text).slice(0, 200);
+            }
           }
         }
       }

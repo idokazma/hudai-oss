@@ -13,6 +13,7 @@ export interface SwarmAgent {
   status: SessionStatus;
   metrics: SessionMetrics;
   tmuxTarget?: string;
+  lastMessage?: string;
   isCurrentSession: boolean;
   source: 'tmux' | 'jsonl';
 }
@@ -73,35 +74,31 @@ export class SwarmService {
 
     // Build maps for tmux matching: by name, by id, and by cwd (project path)
     const tmuxMap = new Map<string, string>();
-    const tmuxCwdMap = new Map<string, string>(); // cwd → pane id
+    const tmuxCwdMap = new Map<string, string[]>(); // cwd → pane ids (multiple agents may share a CWD)
     for (const pane of tmuxPanes) {
       tmuxMap.set(pane.id, pane.id);
       const sessionName = pane.id.split(':')[0];
       if (sessionName) tmuxMap.set(sessionName, pane.id);
-      if (pane.cwd) tmuxCwdMap.set(pane.cwd, pane.id);
+      if (pane.cwd) {
+        const arr = tmuxCwdMap.get(pane.cwd) || [];
+        arr.push(pane.id);
+        tmuxCwdMap.set(pane.cwd, arr);
+      }
     }
 
     const agents: SwarmAgent[] = [];
     const seenJsonlSessions = new Set<string>();
-    // Deduplicate JSONL sessions by project path — keep only the most recent per project
-    const bestByProject = new Map<string, DiscoveredSession>();
-    for (const session of discovered) {
-      const existing = bestByProject.get(session.projectPath);
-      if (!existing || session.lastModified > existing.lastModified) {
-        bestByProject.set(session.projectPath, session);
-      }
-    }
-    const dedupedSessions = Array.from(bestByProject.values());
 
-    // 1. JSONL-discovered sessions (primary source, deduplicated by project)
-    for (const session of dedupedSessions) {
+    // 1. JSONL-discovered sessions (keep all — multiple agents may share a project)
+    for (const session of discovered) {
       seenJsonlSessions.add(session.sessionId);
       const isAttached = session.sessionId === currentId ||
         session.sessionId === this.attachedSessionId;
 
       // Try to find a matching tmux pane (by name or by cwd)
       const projectName = session.projectPath.split('/').pop() || session.projectPath;
-      const tmuxTarget = tmuxMap.get(projectName) || tmuxCwdMap.get(session.projectPath) || undefined;
+      const cwdPanes = tmuxCwdMap.get(session.projectPath);
+      const tmuxTarget = tmuxMap.get(projectName) || cwdPanes?.shift() || undefined;
 
       // Auto-start background monitor for non-attached sessions
       if (!isAttached && !this.backgroundMonitors.has(session.sessionId)) {
@@ -122,6 +119,7 @@ export class SwarmService {
           toolCount: 0,
           lastActivity: session.lastModified,
         },
+        lastMessage: bgMonitor?.lastMessage,
         tmuxTarget,
         isCurrentSession: isAttached,
         source: 'jsonl',
@@ -348,6 +346,131 @@ export class SwarmService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Read a specific JSONL file to determine status + metrics.
+   * Unlike getStatusFromJsonl() which searches by project name, this reads an exact path.
+   */
+  async getStatusFromJsonlPath(jsonlPath: string): Promise<{
+    status: SessionStatus;
+    lastMessage?: string;
+    model?: string;
+    tokensUsed?: number;
+    turnCount?: number;
+    toolCount?: number;
+  } | null> {
+    try {
+      const fileStat = await stat(jsonlPath);
+      const fileAge = Date.now() - fileStat.mtimeMs;
+      const content = await readFile(jsonlPath, 'utf-8');
+      const lines = content.split('\n').filter(Boolean);
+
+      // Scan full file for metrics
+      let turnCount = 0;
+      let toolCount = 0;
+      let tokensUsed = 0;
+      let model: string | undefined;
+
+      for (const line of lines) {
+        try {
+          const entry: JsonlEntry = JSON.parse(line);
+          if (entry.type === 'user') turnCount++;
+          if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+            for (const block of entry.message!.content!) {
+              if ((block as any).type === 'tool_use') toolCount++;
+            }
+            if ((entry as any).model) model = (entry as any).model;
+          }
+          if ((entry as any).usage) {
+            const u = (entry as any).usage;
+            tokensUsed += (u.input_tokens || 0) + (u.output_tokens || 0);
+          }
+          if ((entry.type as string) === 'result' && (entry as any).result?.usage) {
+            const u = (entry as any).result.usage;
+            tokensUsed += (u.input_tokens || 0) + (u.output_tokens || 0);
+          }
+        } catch { /* skip malformed */ }
+      }
+
+      // Read last 20 entries for status + last prose
+      const lastLines = lines.slice(-20);
+      const detector = new StatusDetector();
+      let lastMessage: string | undefined;
+
+      for (const line of lastLines) {
+        try {
+          const entry: JsonlEntry = JSON.parse(line);
+          detector.processEntry(entry);
+
+          if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+            for (const block of entry.message!.content!) {
+              if ((block as any).type === 'text') {
+                const text = ((block as any).text || '').trim();
+                if (text.length >= 20 && !text.startsWith('<system-reminder') && !text.startsWith('<task-notification')) {
+                  lastMessage = text;
+                }
+              }
+            }
+          }
+        } catch { /* skip malformed */ }
+      }
+
+      if (lastMessage) {
+        const firstLine = lastMessage.split('\n').find(l => l.trim().length > 10)?.trim();
+        lastMessage = (firstLine || lastMessage).slice(0, 200);
+      }
+
+      const status = detector.getStatus();
+      const PERMISSION_TOOLS = new Set(['Bash', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'NotebookEdit']);
+
+      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 5); i--) {
+        try {
+          const parsed: JsonlEntry = JSON.parse(lines[i]);
+
+          if (parsed.type === 'system' && (parsed as any).subtype === 'turn_duration') {
+            return { status: { activity: 'waiting_input', detail: 'Session idle' }, lastMessage, model, tokensUsed, turnCount, toolCount };
+          }
+          if ((parsed.type as string) === 'result') {
+            return { status: { activity: 'waiting_input', detail: 'Session idle' }, lastMessage, model, tokensUsed, turnCount, toolCount };
+          }
+          if (parsed.type === 'system') continue;
+
+          if (parsed.type === 'assistant') {
+            const innerContent = parsed.message?.content;
+            if (Array.isArray(innerContent) && innerContent.every((b: any) => b.type === 'text' || b.type === 'thinking')) {
+              return { status: { activity: 'waiting_input', detail: 'Session idle' }, lastMessage, model, tokensUsed, turnCount, toolCount };
+            }
+            if (Array.isArray(innerContent) && innerContent.some((b: any) => b.type === 'tool_use')) {
+              const toolBlock = innerContent.find((b: any) => b.type === 'tool_use') as any;
+              const toolName = toolBlock?.name || '';
+              if (fileAge < 10_000) {
+                return { status: { activity: 'working', detail: toolName ? `Running ${toolName}` : undefined, currentFile: status.currentFile }, lastMessage, model, tokensUsed, turnCount, toolCount };
+              }
+              if (PERMISSION_TOOLS.has(toolName)) {
+                const command = toolBlock?.input?.command || toolBlock?.input?.file_path || toolBlock?.input?.description || '';
+                const detail = command ? `${toolName}: ${String(command).slice(0, 300)}` : `Approval needed: ${toolName}`;
+                return { status: { activity: 'waiting_permission', detail, currentFile: status.currentFile }, lastMessage, model, tokensUsed, turnCount, toolCount };
+              }
+              return { status: { activity: 'working', detail: toolName ? `Running ${toolName}` : undefined, currentFile: status.currentFile }, lastMessage, model, tokensUsed, turnCount, toolCount };
+            }
+          }
+
+          if (parsed.type === 'user') {
+            return { status: { activity: 'working', detail: undefined, currentFile: status.currentFile }, lastMessage, model, tokensUsed, turnCount, toolCount };
+          }
+        } catch { /* skip malformed */ }
+      }
+
+      return { status, lastMessage, model, tokensUsed, turnCount, toolCount };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Expose the scanner for PID-based lookups */
+  getScanner(): SessionScanner {
+    return this.scanner;
   }
 
   private findDbSession(projectPath: string) {

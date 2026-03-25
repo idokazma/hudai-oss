@@ -1,5 +1,8 @@
 import { execSync } from 'child_process';
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 export interface AgentProcessOptions {
   tmuxTarget: string;
@@ -41,6 +44,63 @@ export class AgentProcess extends EventEmitter {
 
   static getPaneCwd(tmuxTarget: string): string {
     return tmuxExec(`display-message -t "${tmuxTarget}" -p "#{pane_current_path}"`).trim();
+  }
+
+  /**
+   * Get the shell PID of a tmux pane.
+   */
+  static getPanePid(tmuxTarget: string): number | undefined {
+    try {
+      const pid = tmuxExec(`display-message -t "${tmuxTarget}" -p "#{pane_pid}"`).trim();
+      const n = parseInt(pid, 10);
+      return isNaN(n) ? undefined : n;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Find the Claude Code child process PID given a shell PID.
+   * Walks the process tree: shell → claude (node) process.
+   */
+  static getClaudeChildPid(panePid: number): number | undefined {
+    try {
+      // pgrep -P finds direct children of the shell process
+      const children = execSync(`pgrep -P ${panePid}`, { encoding: 'utf-8' }).trim();
+      const pids = children.split('\n').map(p => parseInt(p.trim(), 10)).filter(n => !isNaN(n));
+      // Return the first child — typically the claude process
+      return pids[0];
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolve a tmux pane to its Claude Code session info via PID→session file mapping.
+   * Returns the session ID and JSONL path if found.
+   */
+  static getClaudeSessionForPane(tmuxTarget: string): { pid: number; sessionId: string; cwd: string; jsonlPath?: string } | undefined {
+    const panePid = AgentProcess.getPanePid(tmuxTarget);
+    if (!panePid) return undefined;
+
+    const claudePid = AgentProcess.getClaudeChildPid(panePid);
+    if (!claudePid) return undefined;
+
+    // Read ~/.claude/sessions/{pid}.json
+    try {
+      const sessionFile = join(homedir(), '.claude', 'sessions', `${claudePid}.json`);
+      const content = readFileSync(sessionFile, 'utf-8');
+      const data = JSON.parse(content);
+      if (data.sessionId) {
+        return {
+          pid: claudePid,
+          sessionId: data.sessionId,
+          cwd: data.cwd || '',
+        };
+      }
+    } catch { /* session file not found */ }
+
+    return undefined;
   }
 
   static listPanes(): Array<{ id: string; title: string; command: string; cwd: string }> {
