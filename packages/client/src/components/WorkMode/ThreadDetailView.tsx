@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useThreadStore } from '../../stores/thread-store.js';
 import { useEventStore } from '../../stores/event-store.js';
 import { colors, fonts, alpha } from '../../theme/tokens.js';
+import { formatDuration } from '../../utils/format-time.js';
 import type { ThreadPhase } from '@hudai/shared';
 
 // ── Constants ──────────────────────────────────────────────
@@ -55,14 +56,6 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function formatDuration(startMs: number, endMs: number | null): string {
-  const end = endMs ?? Date.now();
-  const secs = Math.round((end - startMs) / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const remSecs = secs % 60;
-  return remSecs > 0 ? `${mins}m ${remSecs}s` : `${mins}m`;
-}
 
 // ── Data structures ────────────────────────────────────────
 

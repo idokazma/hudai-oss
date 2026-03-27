@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { colors, fonts, alpha } from '../../theme/tokens.js';
 import { wsClient } from '../../ws/ws-client.js';
+import { formatDurationMs } from '../../utils/format-time.js';
 import type { SwarmSnapshot, AgentActivity } from '@hudai/shared';
 
 const ACTIVITY_CONFIG: Record<AgentActivity | 'unknown', { label: string; color: string; icon: string; bg: string }> = {
@@ -27,19 +28,11 @@ function getModelShort(model: string | undefined): string {
   return parts.length > 2 ? parts.slice(-2).join('-') : model;
 }
 
-function formatDuration(ms: number): string {
-  if (ms <= 0) return '—';
-  const secs = ms / 1000;
-  if (secs < 60) return `${Math.round(secs)}s`;
-  if (secs < 3600) return `${Math.round(secs / 60)}m`;
-  if (secs < 86400) return `${(secs / 3600).toFixed(1)}h`;
-  return `${(secs / 86400).toFixed(1)}d`;
-}
 
 function formatAge(ts: number | undefined): string {
   if (!ts) return '—';
   const ago = Date.now() - ts;
-  return formatDuration(ago) + ' ago';
+  return formatDurationMs(ago) + ' ago';
 }
 
 /** Inline panel — rendered inside the center viewport (replaces CodebaseMap) */
@@ -162,6 +155,120 @@ export function SwarmOverview({ onClose }: { onClose: () => void }) {
   );
 }
 
+function InlineNotification({ agent }: { agent: SwarmSnapshot }) {
+  const activity = agent.activity;
+  const [answer, setAnswer] = useState('');
+  const options = agent.activityOptions ?? [];
+
+  if (activity !== 'waiting_permission' && activity !== 'waiting_answer') return null;
+
+  const sendCommand = (command: any) => {
+    if (agent.isAttached) {
+      wsClient.send({ kind: 'command', command });
+    } else if (agent.tmuxTarget) {
+      wsClient.send({ kind: 'swarm.command', tmuxTarget: agent.tmuxTarget, command });
+    }
+  };
+
+  const accent = activity === 'waiting_permission' ? colors.status.warning : colors.action.think;
+
+  return (
+    <div style={{
+      padding: '10px 16px',
+      borderBottom: `1px solid ${colors.border.subtle}`,
+      background: alpha(accent, 0.04),
+    }}>
+      {activity === 'waiting_permission' && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={(e) => { e.stopPropagation(); sendCommand({ type: 'approve' }); }}
+            style={swarmBtnStyle(accent, true)}
+          >
+            Approve
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); sendCommand({ type: 'reject' }); }}
+            style={swarmBtnStyle(accent, false)}
+          >
+            Reject
+          </button>
+        </div>
+      )}
+
+      {activity === 'waiting_answer' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {options.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {options.map((opt, i) => (
+                <button
+                  key={opt}
+                  onClick={(e) => { e.stopPropagation(); sendCommand({ type: 'prompt', data: { text: opt } }); }}
+                  style={swarmBtnStyle(accent, i === 0)}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              type="text"
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && answer.trim()) {
+                  sendCommand({ type: 'prompt', data: { text: answer.trim() } });
+                  setAnswer('');
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              placeholder="Type an answer..."
+              style={{
+                flex: 1,
+                background: colors.surface.base,
+                border: `1px solid ${alpha(accent, 0.25)}`,
+                borderRadius: 4,
+                padding: '5px 8px',
+                fontFamily: fonts.mono,
+                fontSize: 11,
+                color: colors.text.primary,
+                outline: 'none',
+              }}
+            />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (answer.trim()) {
+                  sendCommand({ type: 'prompt', data: { text: answer.trim() } });
+                  setAnswer('');
+                }
+              }}
+              style={swarmBtnStyle(accent, true)}
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function swarmBtnStyle(accent: string, primary: boolean): React.CSSProperties {
+  return {
+    padding: '5px 12px',
+    borderRadius: 4,
+    border: primary ? 'none' : `1px solid ${alpha(accent, 0.3)}`,
+    background: primary ? alpha(accent, 0.25) : 'transparent',
+    color: primary ? colors.text.primary : colors.text.secondary,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'background 0.15s',
+  };
+}
+
 function AgentCard({ agent, onSwitch, onKill }: {
   agent: SwarmSnapshot;
   onSwitch: () => void;
@@ -178,7 +285,7 @@ function AgentCard({ agent, onSwitch, onKill }: {
   if (agent.toolCount) stats.push({ label: 'Tools', value: agent.toolCount });
   stats.push({ label: 'Tokens', value: formatTokens(agent.tokensUsed) });
   stats.push({ label: 'Model', value: getModelShort(agent.model) });
-  if (agent.startedAt > 0) stats.push({ label: 'Uptime', value: formatDuration(Date.now() - agent.startedAt) });
+  if (agent.startedAt > 0) stats.push({ label: 'Uptime', value: formatDurationMs(Date.now() - agent.startedAt) });
   if (agent.lastEventAt) stats.push({ label: 'Last Active', value: formatAge(agent.lastEventAt) });
   if (agent.eventCount > 0) stats.push({ label: 'Events', value: agent.eventCount });
 
@@ -294,6 +401,9 @@ function AgentCard({ agent, onSwitch, onKill }: {
           )}
         </div>
       )}
+
+      {/* Inline notification (approve/reject/answer) */}
+      <InlineNotification agent={agent} />
 
       {/* Last message */}
       {agent.lastMessage && (

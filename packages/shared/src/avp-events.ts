@@ -225,7 +225,6 @@ export interface QuestionAnsweredEvent extends AVPEventBase {
   };
 }
 
-// Detail level — collapsed content detected
 export interface DetailCollapsedEvent extends AVPEventBase {
   category: 'control';
   type: 'detail.collapsed';
@@ -272,7 +271,6 @@ export interface ToolCompleteEvent extends AVPEventBase {
   };
 }
 
-// Memory file change event
 export interface MemoryChangeEvent extends AVPEventBase {
   category: 'control';
   type: 'memory.change';
@@ -283,21 +281,17 @@ export interface MemoryChangeEvent extends AVPEventBase {
   };
 }
 
-// Context compaction event
 export interface CompactionEvent extends AVPEventBase {
   category: 'control';
   type: 'context.compaction';
   data: {
     preTokens: number;
     trigger: string;
-    /** Distribution of event types before compaction */
     eventDistribution?: Record<string, number>;
-    /** Total event count before compaction */
     eventCountBefore?: number;
   };
 }
 
-// Loop warning — detected repeated action pattern
 export interface LoopWarningEvent extends AVPEventBase {
   category: 'control';
   type: 'loop.warning';
@@ -308,7 +302,6 @@ export interface LoopWarningEvent extends AVPEventBase {
   };
 }
 
-// Raw output fallback
 export interface RawOutputEvent extends AVPEventBase {
   category: 'control';
   type: 'raw.output';

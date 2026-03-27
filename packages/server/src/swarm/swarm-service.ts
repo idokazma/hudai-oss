@@ -5,6 +5,7 @@ import { StatusDetector, type SessionStatus } from './session-status.js';
 import type { SessionStore, EventStore } from '../persistence/event-store.js';
 import { AgentProcess } from '../pty/agent-process.js';
 import type { JsonlEntry } from '../transcript/jsonl-to-avp.js';
+import type { SwarmSnapshot } from '@hudai/shared';
 
 export interface SwarmAgent {
   sessionId: string;
@@ -160,7 +161,40 @@ export class SwarmService {
   }
 
   /**
-   * Build a text summary for CommanderChat context (replaces SwarmRegistry.buildSwarmSummary).
+   * Get swarm status as SwarmSnapshot[] for backward compatibility with the broadcast protocol.
+   * Maps SwarmAgent[] to the SwarmSnapshot shape expected by the client.
+   */
+  getSnapshots(): SwarmSnapshot[] {
+    const agents = this.getSwarmStatus();
+    return agents.map((a): SwarmSnapshot => {
+      const lastEvent = a.sessionId
+        ? this.eventStore.getLatest(a.sessionId, 1)[0]
+        : undefined;
+
+      return {
+        sessionId: a.sessionId,
+        projectPath: a.projectPath,
+        projectName: a.projectName,
+        startedAt: a.metrics.lastActivity || 0,
+        status: a.status.activity || 'unknown',
+        eventCount: a.metrics.toolCount || 0,
+        lastEventType: lastEvent?.type,
+        lastEventAt: lastEvent?.timestamp || a.metrics.lastActivity,
+        isAttached: a.isCurrentSession,
+        activity: a.status.activity as any,
+        activityDetail: a.status.detail,
+        tokensUsed: a.metrics.tokensUsed,
+        turnCount: a.metrics.turnCount,
+        toolCount: a.metrics.toolCount,
+        tmuxTarget: a.tmuxTarget,
+        source: a.source,
+        lastMessage: a.lastMessage,
+      };
+    });
+  }
+
+  /**
+   * Build a text summary for CommanderChat context.
    */
   buildSwarmSummary(): string {
     const agents = this.getSwarmStatus();

@@ -1,10 +1,7 @@
 import { EventEmitter } from 'events';
+import { randomUUID } from 'node:crypto';
 import type { AVPEvent } from '@hudai/shared';
-
-/** Strip ANSI escape sequences */
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
-}
+import { stripAnsi } from './ansi-utils.js';
 
 export class ClaudeCodeParser extends EventEmitter {
   private sessionId: string;
@@ -458,7 +455,7 @@ export class ClaudeCodeParser extends EventEmitter {
 
     const event = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       sessionId: this.sessionId,
       timestamp: Date.now(),
       source: 'tmux' as const,

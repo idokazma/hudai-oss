@@ -3,14 +3,7 @@ import { useEventStore } from '../stores/event-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { wsClient } from '../ws/ws-client.js';
 import { colors, alpha, fonts } from '../theme/tokens.js';
-
-function formatElapsed(startedAt: number): string {
-  if (!startedAt) return '0:00';
-  const seconds = Math.floor((Date.now() - startedAt) / 1000);
-  const min = Math.floor(seconds / 60);
-  const sec = seconds % 60;
-  return `${min}:${sec.toString().padStart(2, '0')}`;
-}
+import { formatElapsed } from '../utils/format-time.js';
 
 const statusColors: Record<string, string> = {
   idle: colors.text.muted,

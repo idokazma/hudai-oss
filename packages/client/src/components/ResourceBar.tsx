@@ -10,15 +10,8 @@ import { useTokenStore } from '../stores/token-store.js';
 import { useGraphStore } from '../stores/graph-store.js';
 import { useLibraryStore } from '../stores/library-store.js';
 import { SettingsModal } from './SettingsModal.js';
+import { formatElapsed } from '../utils/format-time.js';
 import type { ServerMessage } from '@hudai/shared';
-
-function formatElapsed(startedAt: number): string {
-  if (!startedAt) return '0:00';
-  const seconds = Math.floor((Date.now() - startedAt) / 1000);
-  const min = Math.floor(seconds / 60);
-  const sec = seconds % 60;
-  return `${min}:${sec.toString().padStart(2, '0')}`;
-}
 
 const statusColors: Record<string, string> = {
   idle: colors.text.muted,

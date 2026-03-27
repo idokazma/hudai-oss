@@ -46,7 +46,6 @@ import { createLLMProvider, detectProvider } from './llm/index.js';
 import type { LLMProvider } from './llm/llm-provider.js';
 import { InsightEngine } from './llm/insight-engine.js';
 import { CommanderChat } from './llm/commander-chat.js';
-import { SwarmRegistry } from './llm/swarm-registry.js';
 import { SessionMonitor } from './swarm/session-monitor.js';
 import { SwarmService } from './swarm/swarm-service.js';
 import type { SessionStatus } from './swarm/session-status.js';
@@ -154,7 +153,6 @@ let cachedPipelineLayer: PipelineLayer | null = null;
 let cachedLibraryManifest: LibraryManifest | null = null;
 const libraryCache = new Map<string, LibraryManifest>();
 let refreshManager: IncrementalRefreshManager | null = null;
-const swarmRegistry = new SwarmRegistry(sessionStore, eventStore, () => sessionState.sessionId, () => sessionState.tmuxTarget);
 const swarmService = new SwarmService(sessionStore, eventStore, () => sessionState.sessionId);
 swarmService.start();
 let sessionMonitor: SessionMonitor | null = null;
@@ -1255,10 +1253,41 @@ fastify.register(async function (app) {
               AgentProcess.killSession(msg.tmuxTarget);
               console.log(`[session] Killed tmux session for target: ${msg.tmuxTarget}`);
               // Broadcast updated swarm status
-              const snapshots = swarmRegistry.getSnapshots();
+              const snapshots = swarmService.getSnapshots();
               broadcast({ kind: 'swarm.status', sessions: snapshots });
             } catch (err) {
               const resp: ServerMessage = { kind: 'error', message: `Failed to kill session: ${err}` };
+              socket.send(JSON.stringify(resp));
+            }
+            break;
+          }
+
+          case 'swarm.command': {
+            const { tmuxTarget: target, command: swarmCmd } = msg;
+            try {
+              switch (swarmCmd.type) {
+                case 'approve':
+                  AgentProcess.sendTextToTarget(target, 'y');
+                  break;
+                case 'reject':
+                  AgentProcess.sendTextToTarget(target, 'n');
+                  break;
+                case 'prompt':
+                  AgentProcess.sendTextToTarget(target, swarmCmd.data.text);
+                  break;
+                case 'pause':
+                case 'cancel':
+                  AgentProcess.sendInterruptToTarget(target);
+                  break;
+                case 'resume':
+                  AgentProcess.sendTextToTarget(target, 'Continue with the previous task.');
+                  break;
+                default:
+                  console.warn(`[swarm.command] Unsupported command type: ${swarmCmd.type}`);
+              }
+              console.log(`[swarm.command] Sent ${swarmCmd.type} to ${target}`);
+            } catch (err) {
+              const resp: ServerMessage = { kind: 'error', message: `Failed to send swarm command: ${err}` };
               socket.send(JSON.stringify(resp));
             }
             break;
@@ -1834,8 +1863,8 @@ fastify.register(async function (app) {
           }
 
           case 'swarm.status': {
-            // Merge SwarmRegistry (tmux-based, DB-enriched) with SwarmService (JSONL-discovered)
-            const snapshots = swarmRegistry.getSnapshots();
+            // Get swarm snapshots from SwarmService, then enrich with live session state
+            const snapshots = swarmService.getSnapshots();
             const swarmAgents = swarmService.getSwarmStatus();
             const consumedAgentIds = new Set<string>();
 
@@ -1853,6 +1882,7 @@ fastify.register(async function (app) {
                   // Queue JSONL lookup as additional signal for the attached session
                   snap.activity = sessionState.agentActivity || undefined;
                   snap.activityDetail = sessionState.agentActivityDetail;
+                  snap.activityOptions = sessionState.agentActivityOptions;
                   snap.currentFile = sessionState.agentCurrentFile ?? undefined;
                   let lookupName = snap.projectName;
                   const tmuxTarget = snap.tmuxTarget || snap.projectPath;
@@ -1869,6 +1899,7 @@ fastify.register(async function (app) {
                 } else {
                   snap.activity = sessionState.agentActivity || 'working';
                   snap.activityDetail = sessionState.agentActivityDetail;
+                  snap.activityOptions = sessionState.agentActivityOptions;
                   snap.currentFile = sessionState.agentCurrentFile ?? undefined;
                 }
                 continue;
@@ -1920,6 +1951,7 @@ fastify.register(async function (app) {
                   consumedAgentIds.add(agent.sessionId);
                   snap.activity = snap.activity || agent.status.activity;
                   snap.activityDetail = snap.activityDetail || agent.status.detail;
+                  snap.activityOptions = snap.activityOptions || agent.status.options;
                   snap.currentFile = snap.currentFile || agent.status.currentFile;
                   snap.model = agent.metrics.model;
                   snap.tokensUsed = agent.metrics.tokensUsed;
@@ -1968,6 +2000,7 @@ fastify.register(async function (app) {
                   // for active sessions. Use getStatusFromJsonl which has file-age heuristics.
                   activity: isThisAttached ? (sessionState.agentActivity || undefined) : undefined,
                   activityDetail: isThisAttached ? (sessionState.agentActivityDetail || undefined) : undefined,
+                  activityOptions: isThisAttached ? (sessionState.agentActivityOptions || undefined) : agent.status.options,
                   currentFile: isThisAttached ? (sessionState.agentCurrentFile ?? undefined) : agent.status.currentFile,
                   model: agent.metrics.model,
                   tokensUsed: agent.metrics.tokensUsed,
@@ -2001,6 +2034,7 @@ fastify.register(async function (app) {
                   const r = result.value;
                   snap.activity = snap.activity || r.status.activity;
                   snap.activityDetail = snap.activityDetail || r.status.detail;
+                  snap.activityOptions = snap.activityOptions || r.status.options;
                   if (r.lastMessage) snap.lastMessage = snap.lastMessage || r.lastMessage;
                   if (r.model) snap.model = snap.model || r.model;
                   if (r.tokensUsed) snap.tokensUsed = snap.tokensUsed || r.tokensUsed;
@@ -2320,159 +2354,18 @@ fastify.register(async function (app) {
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 
 
-// ── Filesystem path completion ──────────────────────────────────────
-import { completePath, scanRecentProjects } from './fs/path-completer.js';
+// ── API Routes (extracted) ──────────────────────────────────────────
+import { registerFsRoutes } from './api/fs-routes.js';
+import { registerHooksRoutes } from './api/hooks-routes.js';
 
-// Autocomplete: GET /api/fs/complete?path=/home/user/Des → matching directories
-fastify.get('/api/fs/complete', async (request) => {
-  const { path: partial } = request.query as { path?: string };
-  const suggestions = await completePath(partial || '');
-  return { suggestions };
-});
-
-// Recent projects: GET /api/fs/projects → past sessions + scanned git repos
-fastify.get('/api/fs/projects', async () => {
-  const sessions = sessionStore.list();
-  // Extract unique project paths from past sessions (stream mode has real paths, tmux has targets)
-  const pastPaths = sessions
-    .filter((s) => s.mode === 'stream' || s.projectPath.startsWith('/'))
-    .map((s) => s.projectPath)
-    .filter((p, i, arr) => arr.indexOf(p) === i); // deduplicate
-  const projects = await scanRecentProjects(pastPaths);
-  return { projects };
-});
-
-// ── Claude Code Hooks endpoint ─────────────────────────────────────
-// Claude Code posts Notification hook events here when configured with:
-//   { "hooks": { "Notification": [{ "matcher": "...", "hooks": [{ "type": "http", "url": "http://localhost:4200/api/hooks/notification" }] }] } }
-//
-// This replaces tmux pane-analyzer for activity state detection.
-fastify.post('/api/hooks/notification', async (request, reply) => {
-  const body = request.body as Record<string, any> | undefined;
-  if (!body || typeof body !== 'object') {
-    return reply.status(400).send({ error: 'Invalid request body' });
-  }
-
-  // Mark hooks as active on first notification received
-  if (!hooksActive) {
-    hooksActive = true;
-    console.log('[hooks] First notification received — hooks are now the primary activity source');
-  }
-  lastHookActivityAt = Date.now();
-
-  const update = hooksHandler.handleNotification({
-    matcher: body.matcher || body.type || '',
-    message: body.message,
-    tool: body.tool,
-    command: body.command,
-    question: body.question,
-    options: body.options,
-  });
-
-  if (update) {
-    applyActivityUpdate(update);
-    // Feed hook update into SessionMonitor for status tracking
-    if (sessionMonitor) {
-      sessionMonitor.applyHookUpdate(update);
-    }
-  }
-
-  return { ok: true };
-});
-
-// Explicit "working" transition — called when Claude Code starts processing
-// (hooks don't fire a "working" notification, so we infer it from JSONL activity or this endpoint)
-fastify.post('/api/hooks/working', async (request, reply) => {
-  if (!hooksActive) {
-    hooksActive = true;
-  }
-  lastHookActivityAt = Date.now();
-  applyActivityUpdate({ activity: 'working', detail: undefined });
-  if (sessionMonitor) {
-    sessionMonitor.applyHookUpdate({ activity: 'working' });
-  }
-  return { ok: true };
-});
-
-// ── Hooks auto-install endpoints ────────────────────────────────────
-import { homedir } from 'node:os';
-
-const CLAUDE_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
-const HUDAI_HOOK_URL = `http://localhost:${WS_PORT}/api/hooks/notification`;
-
-/** Check if Hudai notification hooks are installed in Claude Code settings */
-async function checkHooksInstalled(): Promise<{ installed: boolean; hooksActive: boolean }> {
-  try {
-    const content = await readFile(CLAUDE_SETTINGS_PATH, 'utf-8');
-    const settings = JSON.parse(content);
-    const hooks = settings?.hooks?.Notification;
-    if (!Array.isArray(hooks)) return { installed: false, hooksActive };
-    const hasHudai = hooks.some((h: any) => {
-      const cmd = h.command || '';
-      const url = h.url || '';
-      return cmd.includes('localhost') && cmd.includes('/api/hooks/') ||
-             url.includes('localhost') && url.includes('/api/hooks/');
-    });
-    return { installed: hasHudai, hooksActive };
-  } catch {
-    return { installed: false, hooksActive };
-  }
-}
-
-fastify.get('/api/hooks/status', async () => {
-  return checkHooksInstalled();
-});
-
-fastify.post('/api/hooks/install', async () => {
-  let settings: Record<string, any> = {};
-  try {
-    const content = await readFile(CLAUDE_SETTINGS_PATH, 'utf-8');
-    settings = JSON.parse(content);
-  } catch {
-    // File doesn't exist or isn't valid JSON — start fresh
-  }
-
-  if (!settings.hooks) settings.hooks = {};
-  if (!Array.isArray(settings.hooks.Notification)) settings.hooks.Notification = [];
-
-  // Check if already installed
-  const existing = settings.hooks.Notification.some((h: any) => {
-    const cmd = h.command || '';
-    return cmd.includes('/api/hooks/notification');
-  });
-
-  if (!existing) {
-    settings.hooks.Notification.push({
-      matcher: '',
-      command: `curl -s -X POST ${HUDAI_HOOK_URL} -H 'Content-Type: application/json' -d '$CLAUDE_NOTIFICATION'`,
-    });
-  }
-
-  await writeFile(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
-  return { ok: true, installed: true };
-});
-
-fastify.post('/api/hooks/uninstall', async () => {
-  try {
-    const content = await readFile(CLAUDE_SETTINGS_PATH, 'utf-8');
-    const settings = JSON.parse(content);
-    if (Array.isArray(settings?.hooks?.Notification)) {
-      settings.hooks.Notification = settings.hooks.Notification.filter((h: any) => {
-        const cmd = h.command || '';
-        return !cmd.includes('/api/hooks/notification');
-      });
-      if (settings.hooks.Notification.length === 0) {
-        delete settings.hooks.Notification;
-      }
-      if (Object.keys(settings.hooks).length === 0) {
-        delete settings.hooks;
-      }
-    }
-    await writeFile(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
-  } catch {
-    // Settings file doesn't exist — nothing to uninstall
-  }
-  return { ok: true, installed: false };
+registerFsRoutes(fastify, sessionStore);
+registerHooksRoutes(fastify, {
+  hooksHandler,
+  getHooksActive: () => hooksActive,
+  setHooksActive: (v) => { hooksActive = v; },
+  setLastHookActivityAt: (v) => { lastHookActivityAt = v; },
+  applyActivityUpdate,
+  getSessionMonitor: () => sessionMonitor,
 });
 
 // Serve pre-built client files (production mode)
@@ -2506,7 +2399,7 @@ const IDLE_THRESHOLD_MS = 5 * 60_000;
 const swarmAlerted = new Map<string, string>();
 setInterval(() => {
   if (!commanderChat || !serviceEnabled.llm) return;
-  const snapshots = swarmRegistry.getSnapshots();
+  const snapshots = swarmService.getSnapshots();
   for (const s of snapshots) {
     if (s.isAttached) continue;
     const alertKey = s.sessionId || s.projectPath;

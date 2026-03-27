@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useReplayStore } from '../../stores/replay-store.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
+import { formatDuration } from '../../utils/format-time.js';
 import type { SessionSummary } from '@hudai/shared';
 
 function formatDate(ts: number): string {
@@ -12,14 +13,6 @@ function formatDate(ts: number): string {
   return `${month}/${day} ${hours}:${mins}`;
 }
 
-function formatDuration(startedAt: number, endedAt: number | null): string {
-  if (!endedAt) return 'ongoing';
-  const sec = Math.round((endedAt - startedAt) / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${min}m ${s}s`;
-}
 
 const statusBadge: Record<string, { color: string; label: string }> = {
   running: { color: colors.accent.blue, label: 'LIVE' },
@@ -84,7 +77,7 @@ function SessionItem({ session, onSelect, isActive }: {
           {session.eventCount} events
         </span>
         <span style={{ fontSize: 11, color: colors.text.muted }}>
-          {formatDuration(session.startedAt, session.endedAt)}
+          {session.endedAt ? formatDuration(session.startedAt, session.endedAt) : 'ongoing'}
         </span>
       </div>
     </button>

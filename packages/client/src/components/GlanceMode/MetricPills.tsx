@@ -3,17 +3,7 @@ import { useEventStore } from '../../stores/event-store.js';
 import { useSessionStore } from '../../stores/session-store.js';
 import { useDensityStore } from '../../stores/density-store.js';
 import { colors, fonts, alpha } from '../../theme/tokens.js';
-
-function formatUptime(startedAt: number): string {
-  if (!startedAt) return '0s';
-  const seconds = Math.floor((Date.now() - startedAt) / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  if (minutes < 60) return `${minutes}m ${secs}s`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
-}
+import { formatUptime } from '../../utils/format-time.js';
 
 function countFilesChanged(events: { type: string }[]): number {
   const files = new Set<string>();

@@ -1,5 +1,6 @@
 import type { AVPEvent, ChatMessage, SessionState, ServerMessage, DependencyEdge, AdvisorVerbosity, AdvisorScope } from '@hudai/shared';
 import type { LLMProvider } from './llm-provider.js';
+import { formatEventForPrompt, type IntentPhase } from './insight-engine.js';
 
 const MAX_HISTORY = 100;
 const CONTEXT_MESSAGES = 20;
@@ -9,37 +10,6 @@ const THROTTLE_MS: Record<AdvisorVerbosity, number> = {
   normal: 15 * 60_000, // 15 min
   verbose: 5 * 60_000, // 5 min
 };
-
-interface IntentPhase {
-  text: string;
-  detectedAt: number;
-  filesEdited: Set<string>;
-  shellCommands: string[];
-  testsPassed: number;
-  testsFailed: number;
-  errors: number;
-}
-
-function formatEventForPrompt(event: AVPEvent): string {
-  const d = (event as any).data;
-  switch (event.type) {
-    case 'file.read': return `Read ${d.path}`;
-    case 'file.edit': return `Edit ${d.path} (+${d.additions}/-${d.deletions})`;
-    case 'file.create': return `Create ${d.path}`;
-    case 'file.delete': return `Delete ${d.path}`;
-    case 'shell.run': return `Shell: ${d.command}`;
-    case 'shell.output': return `Shell result: exit=${d.exitCode}`;
-    case 'test.run': return `Test run: ${d.command}`;
-    case 'test.result': return `Tests: ${d.passed} passed, ${d.failed} failed`;
-    case 'search.grep': return `Grep "${d.pattern}" → ${d.matchCount} matches`;
-    case 'search.glob': return `Glob "${d.pattern}" → ${d.matchCount} matches`;
-    case 'think.start': return `Thinking: ${d.summary || '...'}`;
-    case 'plan.update': return `Plan step ${d.currentStep}/${d.steps.length}`;
-    case 'permission.prompt': return `Permission: ${d.tool}`;
-    case 'loop.warning': return `Loop warning: ${d.pattern} x${d.count}`;
-    default: return event.type;
-  }
-}
 
 const NOISE_EVENT_TYPES = new Set([
   'raw.output',      // handled separately as agent narrative

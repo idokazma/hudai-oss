@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useThreadStore } from '../../../stores/thread-store.js';
 import { useEventStore } from '../../../stores/event-store.js';
 import { colors, fonts, alpha, EVENT_COLORS } from '../../../theme/tokens.js';
+import { formatDuration } from '../../../utils/format-time.js';
 import type { ThreadSummary, ThreadPhase } from '@hudai/shared';
 
 const TWELVE_HOURS = 12 * 60 * 60 * 1000;
@@ -29,14 +30,6 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function formatDuration(startMs: number, endMs: number | null): string {
-  const end = endMs ?? Date.now();
-  const secs = Math.round((end - startMs) / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const remSecs = secs % 60;
-  return remSecs > 0 ? `${mins}m ${remSecs}s` : `${mins}m`;
-}
 
 /** Build client-side threads from events when server threads are not available */
 function buildClientThreads(events: any[]): ThreadSummary[] {

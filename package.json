@@ -1,6 +1,7 @@
 {
   "name": "hudai",
   "version": "0.1.0",
+  "packageManager": "npm@11.3.0",
   "description": "A command center for AI code agents",
   "author": "Ido Kazma",
   "license": "MIT",

@@ -1,14 +1,10 @@
 import type { AgentActivity } from '@hudai/shared';
+import { stripAnsi } from './ansi-utils.js';
 
 export interface PaneAnalysis {
   activity: AgentActivity;
   detail?: string;
   options?: string[];
-}
-
-/** Strip ANSI escape sequences from a string */
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
 /**

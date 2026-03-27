@@ -18,8 +18,6 @@ interface PlanStore {
   tasks: PlanTask[];
   /** Whether the task list is from a plan file ('plan') or TodoWrite/transcript ('todo') */
   planSource: PlanSource;
-  /** @deprecated Use planSource !== null */
-  hasExplicitPlan: boolean;
   /** Session ID this plan belongs to — only events matching this ID are processed */
   sessionId: string;
   /** Available plan files from ~/.claude/plans/ */
@@ -35,7 +33,6 @@ interface PlanStore {
 export const usePlanStore = create<PlanStore>((set, get) => ({
   tasks: [],
   planSource: null,
-  hasExplicitPlan: false,
   sessionId: '',
   availablePlans: [],
 
@@ -53,7 +50,7 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
   },
 
   clear: () => {
-    set({ tasks: [], planSource: null, hasExplicitPlan: false, sessionId: '' });
+    set({ tasks: [], planSource: null, sessionId: '' });
   },
 
   updateFromEvent: (event) => {
@@ -87,7 +84,7 @@ export const usePlanStore = create<PlanStore>((set, get) => ({
         completedAt: isPlanFile ? undefined : (i < currentStep ? Date.now() : undefined),
         files: stepFiles[i] ?? [],
       }));
-      set({ tasks: newTasks, planSource: incomingSource, hasExplicitPlan: true });
+      set({ tasks: newTasks, planSource: incomingSource });
       return;
     }
 

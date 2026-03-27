@@ -34,11 +34,13 @@ describe('usePlanStore', () => {
     expect(tasks[2].status).toBe('queued');
   });
 
-  it('plan.update sets hasExplicitPlan', () => {
+  it('plan.update sets planSource (hasExplicitPlan removed)', () => {
     usePlanStore.getState().updateFromEvent(makeEvent('plan.update', {
       steps: ['A'], currentStep: 0,
     }));
-    expect(usePlanStore.getState().hasExplicitPlan).toBe(true);
+    expect(usePlanStore.getState().planSource).not.toBeNull();
+    // hasExplicitPlan should no longer exist on the store
+    expect('hasExplicitPlan' in usePlanStore.getState()).toBe(false);
   });
 
   it('plan.update with stepFiles populates file arrays', () => {
@@ -201,7 +203,7 @@ describe('usePlanStore', () => {
     usePlanStore.getState().updateFromEvent(makeEvent('task.start', { prompt: 'Task A' }));
     usePlanStore.getState().clear();
     expect(usePlanStore.getState().tasks).toHaveLength(0);
-    expect(usePlanStore.getState().hasExplicitPlan).toBe(false);
+    expect(usePlanStore.getState().planSource).toBeNull();
     expect(usePlanStore.getState().sessionId).toBe('');
   });
 

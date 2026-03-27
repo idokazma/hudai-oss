@@ -5,7 +5,6 @@ export { OpenAIProvider } from './openai-provider.js';
 export { ClaudeProvider } from './claude-provider.js';
 export { InsightEngine } from './insight-engine.js';
 export { CommanderChat } from './commander-chat.js';
-export { SwarmRegistry } from './swarm-registry.js';
 export { generateSkill, generateAgent } from './generator.js';
 
 import type { LLMProvider } from './llm-provider.js';

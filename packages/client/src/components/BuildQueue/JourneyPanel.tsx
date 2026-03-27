@@ -3,6 +3,7 @@ import { useThreadStore } from '../../stores/thread-store.js';
 import { useEventStore } from '../../stores/event-store.js';
 import { useGraphStore } from '../../stores/graph-store.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
+import { formatDuration } from '../../utils/format-time.js';
 import type { ThreadSummary, ThreadPhase } from '@hudai/shared';
 
 const TWELVE_HOURS = 12 * 60 * 60 * 1000;
@@ -57,14 +58,6 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function formatDuration(startMs: number, endMs: number | null): string {
-  const end = endMs ?? Date.now();
-  const secs = Math.round((end - startMs) / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const remSecs = secs % 60;
-  return remSecs > 0 ? `${mins}m ${remSecs}s` : `${mins}m`;
-}
 
 interface FileTouch {
   path: string;
@@ -434,7 +427,6 @@ export function JourneyPanel() {
   const highlightTask = useCallback((threadId: string) => {
     const files = threadFiles.get(threadId);
     if (!files || files.length === 0) {
-      console.log('[JourneyPanel] no files for thread', threadId);
       return;
     }
 
@@ -448,11 +440,8 @@ export function JourneyPanel() {
     const { nodeMap: freshNodeMap, pathToId: freshPathToId, expandedGroups } = useGraphStore.getState();
     const groupsToExpand = new Set<string>();
 
-    console.log('[JourneyPanel] highlightTask', threadId, 'files:', files.length, 'nodeMap size:', freshNodeMap.size, 'pathToId size:', freshPathToId.size);
-
     for (const f of files) {
       const nodeId = freshNodeMap.has(f.fullPath) ? f.fullPath : freshPathToId.get(f.fullPath);
-      console.log('[JourneyPanel] file:', f.fullPath, 'action:', f.action, 'nodeId:', nodeId);
       if (nodeId) {
         highlights.set(nodeId, f.action);
         trail.push(nodeId);

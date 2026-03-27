@@ -16,7 +16,6 @@ export class WsClient {
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-      console.log('[ws] connected');
       // Request pane list immediately so UI doesn't need a refresh
       this.send({ kind: 'panes.list' });
     };
@@ -33,7 +32,6 @@ export class WsClient {
     };
 
     this.ws.onclose = () => {
-      console.log('[ws] disconnected, reconnecting in 2s...');
       this.reconnectTimer = setTimeout(() => this.connect(), 2000);
     };
 
