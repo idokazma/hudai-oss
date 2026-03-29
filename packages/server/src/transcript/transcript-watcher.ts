@@ -23,6 +23,7 @@ export class TranscriptWatcher extends EventEmitter {
   private sessionId: string;
   private seenToolIds = new Map<string, { name: string; ts: number; input?: Record<string, any> }>();
   private _active = false;
+  private _starting = false;
   private _permissionRules: PermissionRule[] = [];
 
   // Plan progress tracking
@@ -130,49 +131,56 @@ export class TranscriptWatcher extends EventEmitter {
 
   private async beginWatching(): Promise<void> {
     if (!this.filePath) return;
+    if (this._starting) return;
+    this._starting = true;
 
-    if (this.retryTimer) {
-      clearInterval(this.retryTimer);
-      this.retryTimer = null;
-    }
+    try {
+      if (this.retryTimer) {
+        clearInterval(this.retryTimer);
+        this.retryTimer = null;
+      }
 
-    console.log('[transcript] Watching:', this.filePath);
-    this._active = true;
-    this.emit('active', this.filePath);
+      console.log('[transcript] Watching:', this.filePath);
+      this._active = true;
+      this.emit('active', this.filePath);
 
-    // Backfill: read existing content from the start so we capture
-    // earlier events (especially the first user prompt) that occurred
-    // before Hudai attached.
-    this.fileOffset = 0;
-    await this.readNewLines();
+      // Backfill: read existing content from the start so we capture
+      // earlier events (especially the first user prompt) that occurred
+      // before Hudai attached.
+      this.fileOffset = 0;
+      await this.readNewLines();
 
-    // Watch for changes
-    this.abortController = new AbortController();
-    const filePath = this.filePath;
+      // Watch for changes
+      this.abortController = new AbortController();
+      const filePath = this.filePath;
 
-    (async () => {
-      try {
-        const watcher = watch(filePath, { signal: this.abortController!.signal });
-        for await (const event of watcher) {
-          if (event.eventType === 'change') {
-            await this.readNewLines();
+      (async () => {
+        try {
+          const watcher = watch(filePath, { signal: this.abortController!.signal });
+          for await (const event of watcher) {
+            if (event.eventType === 'change') {
+              await this.readNewLines();
+            }
+          }
+        } catch (err: any) {
+          if (err?.name !== 'AbortError') {
+            console.error('[transcript] Watch error:', err);
           }
         }
-      } catch (err: any) {
-        if (err?.name !== 'AbortError') {
-          console.error('[transcript] Watch error:', err);
-        }
-      }
-    })();
+      })();
 
-    // Fallback poll every 2s
-    this.pollTimer = setInterval(() => {
-      this.readNewLines().catch(() => {});
-    }, 2000);
+      // Fallback poll every 2s
+      this.pollTimer = setInterval(() => {
+        this.readNewLines().catch(() => {});
+      }, 2000);
+    } finally {
+      this._starting = false;
+    }
   }
 
   private startRetry() {
     this.retryTimer = setInterval(async () => {
+      if (this._starting) return;
       this.filePath = await this.findActiveTranscript();
       if (this.filePath) {
         await this.beginWatching();
@@ -182,6 +190,7 @@ export class TranscriptWatcher extends EventEmitter {
 
   stop() {
     this._active = false;
+    this._starting = false;
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;

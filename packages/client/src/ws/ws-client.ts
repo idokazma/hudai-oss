@@ -1,22 +1,41 @@
 import type { ClientMessage, ServerMessage } from '@hudai/shared';
 
 type MessageHandler = (msg: ServerMessage) => void;
+export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
+type StateHandler = (state: ConnectionState) => void;
 
 export class WsClient {
   private ws: WebSocket | null = null;
   private handlers = new Set<MessageHandler>();
+  private stateHandlers = new Set<StateHandler>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private url: string;
+  private _state: ConnectionState = 'disconnected';
+  private reconnectDelay = 2000;
+  private static readonly MAX_RECONNECT_DELAY = 30_000;
+  private static readonly BASE_RECONNECT_DELAY = 2000;
 
   constructor(url: string) {
     this.url = url;
   }
 
+  get state() { return this._state; }
+
+  private setState(state: ConnectionState) {
+    if (this._state === state) return;
+    this._state = state;
+    for (const handler of this.stateHandlers) {
+      handler(state);
+    }
+  }
+
   connect() {
+    this.setState('connecting');
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-      // Request pane list immediately so UI doesn't need a refresh
+      this.setState('connected');
+      this.reconnectDelay = WsClient.BASE_RECONNECT_DELAY;
       this.send({ kind: 'panes.list' });
     };
 
@@ -32,17 +51,24 @@ export class WsClient {
     };
 
     this.ws.onclose = () => {
-      this.reconnectTimer = setTimeout(() => this.connect(), 2000);
+      this.setState('disconnected');
+      this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, WsClient.MAX_RECONNECT_DELAY);
     };
 
     this.ws.onerror = (err) => {
       console.error('[ws] error', err);
+      this.setState('error');
     };
   }
 
   send(msg: ClientMessage) {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
+      try {
+        this.ws.send(JSON.stringify(msg));
+      } catch (err) {
+        console.error('[ws] send failed', err);
+      }
     }
   }
 
@@ -51,14 +77,19 @@ export class WsClient {
     return () => this.handlers.delete(handler);
   }
 
-  /** Force reconnect — closes and immediately re-establishes connection */
+  onStateChange(handler: StateHandler) {
+    this.stateHandlers.add(handler);
+    return () => this.stateHandlers.delete(handler);
+  }
+
   reconnect() {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) {
-      this.ws.onclose = null; // Prevent auto-reconnect from firing
+      this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
     }
+    this.reconnectDelay = WsClient.BASE_RECONNECT_DELAY;
     this.connect();
   }
 
@@ -66,10 +97,10 @@ export class WsClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.ws?.close();
     this.ws = null;
+    this.setState('disconnected');
   }
 }
 
-// Singleton instance — connects to the Vite proxy
 export const wsClient = new WsClient(
   `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
 );

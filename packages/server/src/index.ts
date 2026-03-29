@@ -72,6 +72,7 @@ const clients = new Set<WebSocket>();
 const graphBuilder = new GraphBuilder();
 
 // Active session state
+let _transitioning = false;
 let agent: AgentProcess | null = null;
 let parser: ClaudeCodeParser | null = null;
 let commandHandler: CommandHandler | null = null;
@@ -95,6 +96,7 @@ const tokenTracker = new TokenTracker();
 const loopDetector = new LoopDetector();
 let previewProxy: PreviewProxy | null = null;
 let settingsWatcher: FSWatcher | null = null;
+let settingsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const llmConfig = detectProvider({
   geminiApiKey: getSecret('geminiApiKey'),
   openaiApiKey: getSecret('openaiApiKey'),
@@ -182,7 +184,11 @@ function broadcast(msg: ServerMessage) {
   const data = JSON.stringify(msg);
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) {
-      ws.send(data);
+      try {
+        ws.send(data);
+      } catch {
+        clients.delete(ws);
+      }
     }
   }
 }
@@ -250,14 +256,37 @@ function applyActivityUpdate(update: ActivityUpdate) {
   });
 }
 
-const seenPrompts = new Set<string>();
+/** TTL-based dedup cache — entries expire after 1 hour to prevent unbounded growth */
+const SEEN_PROMPTS_TTL = 60 * 60 * 1000;
+const SEEN_PROMPTS_MAX = 500;
+const seenPrompts = new Map<string, number>(); // prompt → timestamp
+
+function hasSeenPrompt(prompt: string): boolean {
+  const ts = seenPrompts.get(prompt);
+  if (ts && Date.now() - ts < SEEN_PROMPTS_TTL) return true;
+  return false;
+}
+
+function markPromptSeen(prompt: string): void {
+  seenPrompts.set(prompt, Date.now());
+  // Evict oldest entries if over max size
+  if (seenPrompts.size > SEEN_PROMPTS_MAX) {
+    const first = seenPrompts.keys().next().value;
+    if (first) seenPrompts.delete(first);
+  }
+}
+
+/** Type-safe event data accessor — avoids scattered `as any` casts */
+function eventData(event: AVPEvent): any {
+  return eventData(event);
+}
 
 function handleEvent(event: AVPEvent) {
   // Deduplicate task.start events by prompt text (backfill + tmux parser overlap)
   if (event.type === 'task.start') {
-    const prompt = ((event as any).data?.prompt || '').trim();
-    if (prompt && seenPrompts.has(prompt)) return;
-    if (prompt) seenPrompts.add(prompt);
+    const prompt = (eventData(event)?.prompt || '').trim();
+    if (prompt && hasSeenPrompt(prompt)) return;
+    if (prompt) markPromptSeen(prompt);
   }
 
   // When hooks are active and we receive JSONL events, transition to 'working'
@@ -273,7 +302,7 @@ function handleEvent(event: AVPEvent) {
 
   sessionState.eventCount++;
   if (event.type === 'file.read' || event.type === 'file.edit' || event.type === 'file.create') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     sessionState.agentCurrentFile = filePath;
 
     // Update graph node heat/state
@@ -286,7 +315,7 @@ function handleEvent(event: AVPEvent) {
       broadcast({ kind: 'graph.update', updates: result.updates });
     }
   } else if (event.type === 'file.delete') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     const result = graphBuilder.applyFileActivity(filePath, 'delete');
     if (result.updates.length > 0) {
       broadcast({ kind: 'graph.update', updates: result.updates });
@@ -295,13 +324,13 @@ function handleEvent(event: AVPEvent) {
 
   // Notify refresh manager of file mutations
   if (event.type === 'file.edit' || event.type === 'file.create' || event.type === 'file.delete') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     if (serviceEnabled.library) refreshManager?.notifyFileChange(filePath);
   }
 
   // Detect memory file changes
   if (event.type === 'file.edit' || event.type === 'file.create') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     const memoryType = isMemoryFile(filePath);
     if (memoryType) {
       const memoryEvent: AVPEvent = {
@@ -324,7 +353,7 @@ function handleEvent(event: AVPEvent) {
 
   // Structured question from transcript — set waiting_answer state directly
   if (event.type === 'question.ask') {
-    const data = (event as any).data;
+    const data = eventData(event);
     updateSessionState({
       agentActivity: 'waiting_answer',
       agentActivityDetail: data.question,
@@ -335,7 +364,7 @@ function handleEvent(event: AVPEvent) {
   // JSONL-based permission detection: when a tool_use arrives with prompted status,
   // the agent is waiting for user approval. Much more reliable than terminal scraping.
   if (event.permission?.status === 'prompted' && event.source === 'transcript') {
-    const data = (event as any).data;
+    const data = eventData(event);
     const toolName = event.type === 'shell.run' ? 'Bash' :
       event.type === 'file.read' ? 'Read' :
       event.type === 'file.edit' ? 'Edit' :
@@ -374,7 +403,7 @@ function handleEvent(event: AVPEvent) {
 
   // Track permission prompts for suggestions
   if (event.type === 'permission.prompt') {
-    const tool = (event as any).data.tool;
+    const tool = eventData(event).tool;
     permissionStats.recordPrompt(tool);
     const suggestions = permissionStats.getNewSuggestions(3);
     for (const suggestion of suggestions) {
@@ -384,7 +413,7 @@ function handleEvent(event: AVPEvent) {
 
   // Track compaction events — enrich with event distribution
   if (event.type === 'context.compaction') {
-    const data = (event as any).data;
+    const data = eventData(event);
     // Enrich compaction event with event distribution
     try {
       const allEvents = eventStore.getByRange(event.sessionId, 0, event.timestamp);
@@ -403,11 +432,11 @@ function handleEvent(event: AVPEvent) {
 
   // Track sub-agent lifecycle
   if (event.type === 'subagent.start') {
-    const data = (event as any).data;
+    const data = eventData(event);
     activeSubagents.set(data.agentId, { type: data.agentType, startedAt: event.timestamp });
     updateBreadcrumb();
   } else if (event.type === 'subagent.end') {
-    const data = (event as any).data;
+    const data = eventData(event);
     activeSubagents.delete(data.agentId);
     updateBreadcrumb();
   }
@@ -415,7 +444,7 @@ function handleEvent(event: AVPEvent) {
   // Loop detection — check tool-use events for repeated patterns
   if (event.category === 'navigation' || event.category === 'mutation' || event.category === 'execution') {
     const toolName = event.type;
-    const primaryArg = (event as any).data?.path ?? (event as any).data?.command ?? (event as any).data?.pattern ?? '';
+    const primaryArg = eventData(event)?.path ?? eventData(event)?.command ?? eventData(event)?.pattern ?? '';
     const warning = loopDetector.recordAction(toolName, primaryArg, event.timestamp);
     if (warning) {
       const loopEvent: AVPEvent = {
@@ -467,6 +496,9 @@ function updateBreadcrumb() {
 }
 
 async function attachToPane(tmuxTarget: string) {
+  if (_transitioning) { console.warn('[attach] Skipping — transition in progress'); return ''; }
+  _transitioning = true;
+  try {
   // Clean up any existing connections (stream or tmux)
   if (agentHost) {
     stopAgent();
@@ -786,10 +818,9 @@ async function attachToPane(tmuxTarget: string) {
       const settingsLocalPath = join(paneCwd, '.claude', 'settings.local.json');
       // Ensure dir exists so watch doesn't fail
       await mkdir(join(paneCwd, '.claude'), { recursive: true });
-      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
       settingsWatcher = watch(settingsLocalPath, () => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(async () => {
+        if (settingsDebounceTimer) clearTimeout(settingsDebounceTimer);
+        settingsDebounceTimer = setTimeout(async () => {
           try {
             const root = graphBuilder.rootDir;
             if (!root) return;
@@ -898,7 +929,11 @@ async function attachToPane(tmuxTarget: string) {
     console.error('[attach] Failed to send project history:', err);
   }
 
+  _transitioning = false;
   return sessionId;
+  } finally {
+    _transitioning = false;
+  }
 }
 
 function detachFromPane() {
@@ -924,6 +959,7 @@ function detachFromPane() {
     settingsWatcher.close();
     settingsWatcher = null;
   }
+  if (settingsDebounceTimer) { clearTimeout(settingsDebounceTimer); settingsDebounceTimer = null; }
   agent = null;
   parser = null;
   commandHandler = null;
@@ -995,6 +1031,9 @@ function stopAgent() {
  * and reads structured JSON events from stdout.
  */
 async function startAgent(options: { projectPath: string; prompt?: string; label: string }) {
+  if (_transitioning) { console.warn('[startAgent] Skipping — transition in progress'); return ''; }
+  _transitioning = true;
+  try {
   // Clean up any existing connections (tmux or stream)
   detachFromPane();
   stopAgent();
@@ -1080,7 +1119,11 @@ async function startAgent(options: { projectPath: string; prompt?: string; label
 
   broadcast({ kind: 'agent.status', running: true });
 
+  _transitioning = false;
   return sessionId;
+  } finally {
+    _transitioning = false;
+  }
 }
 
 // WebSocket route
@@ -1474,7 +1517,7 @@ fastify.register(async function (app) {
               }
               insightEngine.requestSummary(events, sessionState, fullContext || undefined).then((summary) => {
                 if (summary) broadcast({ kind: 'insight.summary', summary });
-              });
+              }).catch((err) => console.error('[insight] Summary request failed:', err));
             }
             break;
           }
@@ -1493,7 +1536,7 @@ fastify.register(async function (app) {
                 for (const chatMsg of commanderChat!.flush()) {
                   broadcast(chatMsg);
                 }
-              });
+              }).catch((err) => { console.error('[chat] User message failed:', err); });
             } else {
               // No LLM available — inform user
               const noLlm: ServerMessage = {
@@ -2152,7 +2195,7 @@ const IDLE_THRESHOLD_MS = 5 * 60_000;
 // Track which sessions we've already alerted about (sessionId → alert type)
 // so we don't spam the same message every interval tick
 const swarmAlerted = new Map<string, string>();
-setInterval(() => {
+const swarmCheckTimer = setInterval(() => {
   if (!commanderChat || !serviceEnabled.llm) return;
   const snapshots = swarmService.getSnapshots();
   for (const s of snapshots) {
@@ -2167,7 +2210,7 @@ setInterval(() => {
         'swarm.error',
       ).then(() => {
         for (const msg of commanderChat!.flush()) broadcast(msg);
-      });
+      }).catch((err) => console.error('[swarm-check] Proactive push failed:', err));
     } else if (s.lastEventAt && Date.now() - s.lastEventAt > IDLE_THRESHOLD_MS && s.status === 'running') {
       if (swarmAlerted.get(alertKey) === 'idle') continue;
       swarmAlerted.set(alertKey, 'idle');
@@ -2178,7 +2221,7 @@ setInterval(() => {
         'swarm.idle',
       ).then(() => {
         for (const msg of commanderChat!.flush()) broadcast(msg);
-      });
+      }).catch((err) => console.error('[swarm-check] Proactive push failed:', err));
     } else {
       // Session recovered (new activity or status change) — clear so we can alert again if it re-idles
       swarmAlerted.delete(alertKey);
@@ -2194,7 +2237,7 @@ const SUMMARY_INTERVALS: Record<string, number> = {
 };
 let lastAutoSummaryAt = 0;
 let lastAutoSummaryEventCount = 0;
-setInterval(() => {
+const autoSummaryTimer = setInterval(() => {
   if (!insightEngine || !commanderChat || !serviceEnabled.llm) return;
   if (sessionState.status !== 'running' && sessionState.status !== 'idle') return;
   if (!sessionState.sessionId) return;
@@ -2227,7 +2270,7 @@ setInterval(() => {
 
   insightEngine.requestSummary(events, sessionState, fullContext || undefined).then((summary) => {
     if (summary) broadcast({ kind: 'insight.summary', summary });
-  });
+  }).catch((err) => console.error('[insight] Summary request failed:', err));
 }, 60_000); // check every minute
 
 // Cleanup on shutdown
@@ -2320,11 +2363,15 @@ startTelegramBot();
 
 // Clean up bot on server shutdown
 process.on('SIGINT', () => {
+  clearInterval(swarmCheckTimer);
+  clearInterval(autoSummaryTimer);
   swarmService.stop();
   telegramBotProcess?.kill();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  clearInterval(swarmCheckTimer);
+  clearInterval(autoSummaryTimer);
   swarmService.stop();
   telegramBotProcess?.kill();
   process.exit(0);

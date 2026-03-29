@@ -13,11 +13,14 @@ interface EventStoreState {
 export const useEventStore = create<EventStoreState>((set) => ({
   events: [],
   addEvent: (event) =>
-    set((s) => ({
-      events: s.events.length >= MAX_EVENTS
-        ? [...s.events.slice(-MAX_EVENTS + 1), event]
-        : [...s.events, event],
-    })),
+    set((s) => {
+      if (s.events.length >= MAX_EVENTS) {
+        const next = s.events.slice(-(MAX_EVENTS - 1));
+        next.push(event);
+        return { events: next };
+      }
+      return { events: [...s.events, event] };
+    }),
   addEvents: (events) =>
     set((s) => ({
       events: [...s.events, ...events].slice(-MAX_EVENTS),

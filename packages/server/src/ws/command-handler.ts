@@ -5,7 +5,7 @@ export class CommandHandler {
   constructor(private agent: AgentProcess) {}
 
   handle(command: SteeringCommand) {
-    console.log(`[command] Handling: ${command.type}`, 'data' in command ? (command as any).data : '');
+    console.log(`[command] Handling: ${command.type}`, 'data' in command ? command.data : '');
 
     switch (command.type) {
       case 'focus_file':
@@ -43,13 +43,11 @@ export class CommandHandler {
         break;
 
       case 'approve':
-        // Send 'y' + Enter to approve permission prompts
         this.agent.write('y');
         this.agent.sendEnter();
         break;
 
       case 'reject':
-        // Send 'n' + Enter to reject permission prompts
         this.agent.write('n');
         this.agent.sendEnter();
         break;
@@ -67,6 +65,21 @@ export class CommandHandler {
         this.agent.write(command.data.text);
         break;
 
+      // UI-only commands — no tmux action needed
+      case 'toggle_detail':
+      case 'toggle_explain':
+      case 'set_auto_expand':
+        break;
+
+      // Handled externally in index.ts before reaching CommandHandler
+      case 'spawn_agent':
+        break;
+
+      default: {
+        // Exhaustive check — TypeScript will error if a new command type is added but not handled
+        const _exhaustive: never = command;
+        console.warn(`[command] Unhandled command type: ${(_exhaustive as any).type}`);
+      }
     }
   }
 }

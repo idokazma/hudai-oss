@@ -8,6 +8,17 @@ export interface TestHealth {
   lastRun: number;
 }
 
+/** Rough estimate: average tokens per event (for context usage heuristic) */
+const EST_TOKENS_PER_EVENT = 500;
+/** Rough context window size for estimation purposes */
+const EST_CONTEXT_WINDOW = 200_000;
+/** Max percentage cap for heuristic estimates */
+const EST_MAX_PERCENT = 95;
+/** Seconds per "token unit" for time-based token estimation */
+const EST_SECONDS_PER_TOKEN_UNIT = 30;
+/** Token units per event for density-based estimation */
+const EST_TOKEN_UNITS_PER_EVENT = 0.3;
+
 const MAX_TRAIL = 8;
 
 interface SessionStore {
@@ -67,13 +78,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       });
     }
 
-    // Heuristic context estimate: ~200k token window, each event ~500 tokens avg
-    // Cap at 95% since we can't know exactly
-    const contextEst = Math.min(95, Math.round((totalEvents * 500) / 2000));
-    // Token estimate: based on elapsed time and event density
+    const contextEst = Math.min(EST_MAX_PERCENT, Math.round((totalEvents * EST_TOKENS_PER_EVENT) / (EST_CONTEXT_WINDOW / 100)));
     const { session } = get();
     const elapsed = session.startedAt ? (Date.now() - session.startedAt) / 1000 : 0;
-    const tokensEst = Math.min(95, Math.round(elapsed / 30 + totalEvents * 0.3));
+    const tokensEst = Math.min(EST_MAX_PERCENT, Math.round(elapsed / EST_SECONDS_PER_TOKEN_UNIT + totalEvents * EST_TOKEN_UNITS_PER_EVENT));
 
     set({ contextPercent: contextEst, tokensPercent: tokensEst });
   },

@@ -259,14 +259,16 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const { graph, activityNodes, fileIndicators, heatTick } = get();
     let changed = false;
 
-    // Decay file heat — mutate in place, do NOT create new graph reference
+    // Decay file heat — create new objects instead of mutating in place
+    let newNodes = graph?.nodes;
     if (graph) {
-      for (const node of graph.nodes) {
+      newNodes = graph.nodes.map(node => {
         if (node.heat > 0) {
-          node.heat = Math.max(0, node.heat - 0.02);
           changed = true;
+          return { ...node, heat: Math.max(0, node.heat - 0.02) };
         }
-      }
+        return node;
+      });
     }
 
     // Decay activity nodes and remove expired ones
@@ -275,8 +277,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     for (const a of activityNodes) {
       const age = now - a.createdAt;
       if (age < ACTIVITY_TTL) {
-        a.heat = Math.max(0, 1 - age / ACTIVITY_TTL);
-        alive.push(a);
+        alive.push({ ...a, heat: Math.max(0, 1 - age / ACTIVITY_TTL) });
         changed = true;
       } else {
         changed = true;
@@ -293,22 +294,21 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     }
 
     if (changed || indicatorsChanged) {
-      // Compute hottest file for stable selector access
       let hottestFile: string | null = null;
       let maxHeat = 0;
-      if (graph) {
-        for (const node of graph.nodes) {
+      if (newNodes) {
+        for (const node of newNodes) {
           if (node.heat > maxHeat) {
             maxHeat = node.heat;
             hottestFile = node.id;
           }
         }
       }
-      // Only update heatTick and activityNodes — NOT graph reference
       set({
         heatTick: heatTick + 1,
         activityNodes: alive,
         hottestFile,
+        ...(graph && newNodes && newNodes !== graph.nodes ? { graph: { ...graph, nodes: newNodes } } : {}),
         ...(indicatorsChanged ? { fileIndicators: new Map(fileIndicators) } : {}),
       });
     }

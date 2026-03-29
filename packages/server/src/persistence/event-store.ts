@@ -24,10 +24,9 @@ export class EventStore {
       'SELECT * FROM events WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?'
     );
     this.queryByProjectStmt = db.prepare(
-      `SELECT e.* FROM events e
+      `SELECT DISTINCT e.id, e.session_id, e.timestamp, e.category, e.type, e.data FROM events e
        JOIN sessions s ON e.session_id = s.id
        WHERE s.project_path = ? AND e.timestamp >= ?
-       GROUP BY e.timestamp, e.type, e.data
        ORDER BY e.timestamp ASC LIMIT ?`
     );
     this.queryLatestProjectTimestampStmt = db.prepare(
