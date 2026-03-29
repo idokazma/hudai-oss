@@ -278,7 +278,7 @@ function markPromptSeen(prompt: string): void {
 
 /** Type-safe event data accessor — avoids scattered `as any` casts */
 function eventData(event: AVPEvent): any {
-  return eventData(event);
+  return (event as any).data;
 }
 
 function handleEvent(event: AVPEvent) {
