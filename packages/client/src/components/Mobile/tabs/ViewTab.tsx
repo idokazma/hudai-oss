@@ -8,8 +8,9 @@ import { useChatStore } from '../../../stores/chat-store.js';
 import { colors, fonts, alpha, EVENT_COLORS } from '../../../theme/tokens.js';
 import type { FileNode } from '@hudai/shared';
 import { useEffect } from 'react';
+import { HumanShell } from '../views/HumanShell.js';
 
-type ViewMode = 'journey' | 'files' | 'pipeline';
+type ViewMode = 'conversation' | 'journey' | 'files' | 'pipeline';
 
 const TYPE_ICONS: Record<JourneyEntry['type'], string> = {
   file: '📄',
@@ -189,12 +190,241 @@ function JourneyView() {
   );
 }
 
+interface FolderNode {
+  name: string;
+  path: string;
+  children: Map<string, FolderNode>;
+  files: FileNode[];
+}
+
+function buildFolderTree(nodes: FileNode[]): FolderNode {
+  const root: FolderNode = { name: '', path: '', children: new Map(), files: [] };
+
+  for (const node of nodes) {
+    const group = node.group || '';
+    const parts = group ? group.split('/') : [];
+    let current = root;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!current.children.has(part)) {
+        current.children.set(part, {
+          name: part,
+          path: parts.slice(0, i + 1).join('/'),
+          children: new Map(),
+          files: [],
+        });
+      }
+      current = current.children.get(part)!;
+    }
+    current.files.push(node);
+  }
+  return root;
+}
+
+function countAllFiles(folder: FolderNode): { total: number; modified: number } {
+  let total = folder.files.length;
+  let modified = folder.files.filter((f) => f.modified).length;
+  for (const child of folder.children.values()) {
+    const sub = countAllFiles(child);
+    total += sub.total;
+    modified += sub.modified;
+  }
+  return { total, modified };
+}
+
+function collectAllFiles(folder: FolderNode): FileNode[] {
+  const result = [...folder.files];
+  for (const child of folder.children.values()) {
+    result.push(...collectAllFiles(child));
+  }
+  return result;
+}
+
+function FolderRow({ folder, depth, expandedSet, toggleExpand }: {
+  folder: FolderNode;
+  depth: number;
+  expandedSet: Set<string>;
+  toggleExpand: (path: string) => void;
+}) {
+  const isExpanded = expandedSet.has(folder.path);
+  const { total, modified } = countAllFiles(folder);
+  const sortedChildren = [...folder.children.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  return (
+    <div>
+      <div
+        onClick={() => toggleExpand(folder.path)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 0',
+          paddingLeft: depth * 16,
+          borderBottom: `1px solid ${colors.border.subtle}`,
+          cursor: 'pointer',
+        }}
+      >
+        <span style={{ fontSize: 12, color: colors.accent.primary }}>
+          {isExpanded ? '▾' : '▸'}
+        </span>
+        <span
+          style={{
+            flex: 1,
+            fontSize: 13,
+            fontFamily: fonts.mono,
+            color: colors.text.primary,
+            fontWeight: 600,
+          }}
+        >
+          {folder.name}/
+        </span>
+        <span style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.text.dimmed }}>
+          {total}
+        </span>
+        {modified > 0 && (
+          <span style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.accent.light }}>
+            {modified} mod
+          </span>
+        )}
+      </div>
+
+      {isExpanded && (
+        <>
+          {/* Sub-folders */}
+          {sortedChildren.map(([, child]) => (
+            <FolderRow
+              key={child.path}
+              folder={child}
+              depth={depth + 1}
+              expandedSet={expandedSet}
+              toggleExpand={toggleExpand}
+            />
+          ))}
+
+          {/* Files in this folder */}
+          {folder.files.map((node) => (
+            <div
+              key={node.id}
+              onClick={() => {
+                wsClient.send({
+                  kind: 'chat.send',
+                  text: `Analyze the file \`${node.id}\`: what is its purpose, and what did the agent do with it?`,
+                });
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 0',
+                paddingLeft: (depth + 1) * 16,
+                borderBottom: `1px solid ${alpha(colors.border.subtle, 0.5)}`,
+                cursor: 'pointer',
+              }}
+            >
+              <div
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: node.modified
+                    ? colors.accent.primary
+                    : node.visited
+                      ? colors.accent.light
+                      : colors.text.dimmed,
+                  flexShrink: 0,
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 12,
+                  fontFamily: fonts.mono,
+                  color: node.modified
+                    ? colors.accent.light
+                    : node.visited
+                      ? colors.text.secondary
+                      : colors.text.muted,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  flex: 1,
+                }}
+              >
+                {node.label}
+              </span>
+              <span
+                style={{
+                  fontSize: 10,
+                  fontFamily: fonts.mono,
+                  color: colors.text.dimmed,
+                }}
+              >
+                {(node.size / 1024).toFixed(1)}K
+              </span>
+            </div>
+          ))}
+
+          {/* Folder-level actions */}
+          <div style={{ display: 'flex', gap: 6, padding: '8px 0', paddingLeft: (depth + 1) * 16, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => {
+                wsClient.send({
+                  kind: 'chat.send',
+                  text: `Analyze the \`${folder.path}/\` module: what does it do, and are there issues?`,
+                });
+              }}
+              style={{
+                padding: '8px 12px',
+                borderRadius: 8,
+                border: `1px solid ${colors.border.subtle}`,
+                background: colors.surface.base,
+                color: colors.text.secondary,
+                fontSize: 12,
+                fontFamily: fonts.body,
+                cursor: 'pointer',
+                minHeight: 36,
+              }}
+            >
+              Ask about module
+            </button>
+            <button
+              onClick={() => {
+                const allFiles = collectAllFiles(folder);
+                wsClient.send({
+                  kind: 'command',
+                  command: {
+                    type: 'scope_boundary',
+                    data: { files: allFiles.map((n) => n.id), label: `${folder.path} scope` },
+                  },
+                });
+              }}
+              style={{
+                padding: '8px 12px',
+                borderRadius: 8,
+                border: `1px solid ${alpha(colors.accent.primary, 0.3)}`,
+                background: alpha(colors.accent.primary, 0.08),
+                color: colors.accent.primary,
+                fontSize: 12,
+                fontFamily: fonts.body,
+                cursor: 'pointer',
+                minHeight: 36,
+              }}
+            >
+              Scope agent here
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
- * Files view — shows codebase files grouped by module, tappable to steer
+ * Files view — shows codebase files as an expandable folder tree
  */
 function FilesView() {
   const graph = useGraphStore((s) => s.graph);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set());
 
   if (!graph || graph.nodes.length === 0) {
     return (
@@ -204,175 +434,85 @@ function FilesView() {
     );
   }
 
-  // Group files by their group property (module/directory)
-  const groups = new Map<string, FileNode[]>();
-  for (const node of graph.nodes) {
-    const group = node.group || 'root';
-    const existing = groups.get(group) ?? [];
-    existing.push(node);
-    groups.set(group, existing);
-  }
+  const tree = buildFolderTree(graph.nodes);
 
-  const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const toggleExpand = (path: string) => {
+    setExpandedSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  // Render top-level folders (skip root wrapper)
+  const topFolders = [...tree.children.entries()].sort(([a], [b]) => a.localeCompare(b));
 
   return (
     <div style={{ padding: '0 16px' }}>
-      {sortedGroups.map(([group, nodes]) => {
-        const isExpanded = expanded === group;
-        const modifiedCount = nodes.filter((n) => n.modified).length;
-        const visitedCount = nodes.filter((n) => n.visited).length;
-
-        return (
-          <div key={group}>
-            <div
-              onClick={() => setExpanded(isExpanded ? null : group)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '10px 0',
-                borderBottom: `1px solid ${colors.border.subtle}`,
-                cursor: 'pointer',
-              }}
-            >
-              <span style={{ fontSize: 12, color: colors.accent.primary }}>◈</span>
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: 13,
-                  fontFamily: fonts.mono,
-                  color: colors.text.primary,
-                  fontWeight: 600,
-                }}
-              >
-                {group}/
-              </span>
-              <span style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.text.dimmed }}>
-                {nodes.length} files
-              </span>
-              {modifiedCount > 0 && (
-                <span style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.accent.light }}>
-                  {modifiedCount} mod
-                </span>
-              )}
-              <span style={{ fontSize: 12, color: colors.text.dimmed }}>{isExpanded ? '▾' : '▸'}</span>
-            </div>
-
-            {isExpanded && (
-              <div style={{ padding: '4px 0 4px 20px' }}>
-                {nodes.map((node) => (
-                  <div
-                    key={node.id}
-                    onClick={() => {
-                      wsClient.send({
-                        kind: 'chat.send',
-                        text: `Analyze the file \`${node.id}\`: what is its purpose, and what did the agent do with it?`,
-                      });
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '6px 0',
-                      borderBottom: `1px solid ${alpha(colors.border.subtle, 0.5)}`,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: node.modified
-                          ? colors.accent.primary
-                          : node.visited
-                            ? colors.accent.light
-                            : colors.text.dimmed,
-                        flexShrink: 0,
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontFamily: fonts.mono,
-                        color: node.modified
-                          ? colors.accent.light
-                          : node.visited
-                            ? colors.text.secondary
-                            : colors.text.muted,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        flex: 1,
-                      }}
-                    >
-                      {node.label}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 10,
-                        fontFamily: fonts.mono,
-                        color: colors.text.dimmed,
-                      }}
-                    >
-                      {(node.size / 1024).toFixed(1)}K
-                    </span>
-                  </div>
-                ))}
-
-                {/* Module-level actions */}
-                <div style={{ display: 'flex', gap: 6, padding: '8px 0', flexWrap: 'wrap' }}>
-                  <button
-                    onClick={() => {
-                      wsClient.send({
-                        kind: 'chat.send',
-                        text: `Analyze the \`${group}/\` module: what does it do, and are there issues?`,
-                      });
-                    }}
-                    style={{
-                      padding: '8px 12px',
-                      borderRadius: 8,
-                      border: `1px solid ${colors.border.subtle}`,
-                      background: colors.surface.base,
-                      color: colors.text.secondary,
-                      fontSize: 12,
-                      fontFamily: fonts.body,
-                      cursor: 'pointer',
-                      minHeight: 36,
-                    }}
-                  >
-                    Ask about module
-                  </button>
-                  <button
-                    onClick={() => {
-                      wsClient.send({
-                        kind: 'command',
-                        command: {
-                          type: 'scope_boundary',
-                          data: { files: nodes.map((n) => n.id), label: `${group} scope` },
-                        },
-                      });
-                    }}
-                    style={{
-                      padding: '8px 12px',
-                      borderRadius: 8,
-                      border: `1px solid ${alpha(colors.accent.primary, 0.3)}`,
-                      background: alpha(colors.accent.primary, 0.08),
-                      color: colors.accent.primary,
-                      fontSize: 12,
-                      fontFamily: fonts.body,
-                      cursor: 'pointer',
-                      minHeight: 36,
-                    }}
-                  >
-                    Scope agent here
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {topFolders.map(([, folder]) => (
+        <FolderRow
+          key={folder.path}
+          folder={folder}
+          depth={0}
+          expandedSet={expandedSet}
+          toggleExpand={toggleExpand}
+        />
+      ))}
+      {/* Root-level files (no group) */}
+      {tree.files.map((node) => (
+        <div
+          key={node.id}
+          onClick={() => {
+            wsClient.send({
+              kind: 'chat.send',
+              text: `Analyze the file \`${node.id}\`: what is its purpose, and what did the agent do with it?`,
+            });
+          }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 0',
+            borderBottom: `1px solid ${alpha(colors.border.subtle, 0.5)}`,
+            cursor: 'pointer',
+          }}
+        >
+          <div
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: node.modified
+                ? colors.accent.primary
+                : node.visited
+                  ? colors.accent.light
+                  : colors.text.dimmed,
+              flexShrink: 0,
+            }}
+          />
+          <span
+            style={{
+              fontSize: 12,
+              fontFamily: fonts.mono,
+              color: node.modified
+                ? colors.accent.light
+                : node.visited
+                  ? colors.text.secondary
+                  : colors.text.muted,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              flex: 1,
+            }}
+          >
+            {node.label}
+          </span>
+          <span style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.text.dimmed }}>
+            {(node.size / 1024).toFixed(1)}K
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -484,7 +624,7 @@ function PipelineList() {
 }
 
 export function ViewTab() {
-  const [mode, setMode] = useState<ViewMode>('journey');
+  const [mode, setMode] = useState<ViewMode>('conversation');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -499,6 +639,7 @@ export function ViewTab() {
         }}
       >
         {([
+          { id: 'conversation' as const, label: 'Chat' },
           { id: 'journey' as const, label: 'Journey' },
           { id: 'files' as const, label: 'Files' },
           { id: 'pipeline' as const, label: 'Pipeline' },
@@ -532,6 +673,7 @@ export function ViewTab() {
           WebkitOverflowScrolling: 'touch',
         }}
       >
+        {mode === 'conversation' && <HumanShell />}
         {mode === 'journey' && <JourneyView />}
         {mode === 'files' && <FilesView />}
         {mode === 'pipeline' && <PipelineList />}

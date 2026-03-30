@@ -449,7 +449,7 @@ export function CodebaseMap() {
         overflow: 'hidden',
       }}
     >
-      <canvas ref={canvasRef} style={{ display: 'block', opacity: mapMode === 'journey' || mapMode === 'pipeline' || mapMode === 'library' ? 0.15 : 1 }} />
+      <canvas ref={canvasRef} style={{ display: 'block', opacity: mapMode === 'pipeline' || mapMode === 'library' ? 0.15 : mapMode === 'journey' ? 0.5 : 1 }} />
 
       {/* Architecture mode zoom tier selector */}
       {mapMode === 'architecture' && (

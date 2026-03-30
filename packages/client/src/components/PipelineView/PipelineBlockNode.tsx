@@ -27,6 +27,7 @@ const PLAN_STATUS_STYLES: Record<PlanBlockStatus, { color?: string; opacity: num
   planned: { opacity: 1, borderStyle: 'solid' },
   'in-progress': { color: colors.accent.primary, opacity: 1, borderStyle: 'solid', icon: '⟳' },
   completed: { color: colors.status.successLight, opacity: 1, borderStyle: 'solid', icon: '✓' },
+  blueprint: { color: colors.block.blueprint, opacity: 0.85, borderStyle: 'dashed', labelColor: colors.text.secondary },
 };
 
 export interface PipelineBlockNodeData {

@@ -7,5 +7,6 @@ export * from './token-types.js';
 export * from './insight-types.js';
 export * from './library-types.js';
 export * from './chat-types.js';
+export * from './thread-types.js';
 export * from './ws-messages.js';
 export * from './constants.js';

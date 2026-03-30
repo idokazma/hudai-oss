@@ -7,6 +7,7 @@ import type { PipelineLayer, PipelineBlock } from './pipeline-types.js';
 import type { InsightSummary, InsightIntent, InsightNotification } from './insight-types.js';
 import type { LibraryBuildProgress, ProjectOverview, ModuleShelf } from './library-types.js';
 import type { ChatMessage } from './chat-types.js';
+import type { ThreadSummary } from './thread-types.js';
 
 // Session summary for history listing
 export interface SessionSummary {
@@ -36,6 +37,27 @@ export interface SwarmSnapshot {
   lastEventAt?: number;
   isAttached: boolean;
   lastIntent?: string;
+  // Rich fields from SessionMonitor (Phase 4)
+  /** Agent activity: working, waiting_input, waiting_permission, waiting_answer */
+  activity?: AgentActivity;
+  /** Activity detail (tool name, question text, etc.) */
+  activityDetail?: string;
+  /** Current file being worked on */
+  currentFile?: string;
+  /** LLM model in use */
+  model?: string;
+  /** Total tokens consumed */
+  tokensUsed?: number;
+  /** Number of conversation turns */
+  turnCount?: number;
+  /** Number of tool invocations */
+  toolCount?: number;
+  /** tmux target for switching (null for non-tmux sessions) */
+  tmuxTarget?: string;
+  /** How the session was discovered */
+  source?: 'tmux' | 'jsonl';
+  /** Last meaningful agent prose (truncated) */
+  lastMessage?: string;
 }
 
 // Server -> Client
@@ -81,12 +103,19 @@ export type ServerMessage =
   | { kind: 'generate.result'; type: 'skill' | 'agent'; name: string; filename: string; content: string; success: boolean; error?: string }
   | { kind: 'agent.output'; text: string; append: boolean }
   | { kind: 'agent.status'; running: boolean; claudeSessionId?: string }
+  | { kind: 'thread.update'; thread: ThreadSummary }
+  | { kind: 'thread.list'; threads: ThreadSummary[] }
   | { kind: 'error'; message: string };
+
+export type PaneStatus = 'working' | 'waiting_input' | 'waiting_permission' | 'asking' | 'idle' | 'unknown';
 
 export interface TmuxPane {
   id: string;
   title: string;
   command: string;
+  status?: PaneStatus;
+  /** Last meaningful line from the pane (for context) */
+  statusLine?: string;
 }
 
 // Client -> Server
@@ -100,6 +129,7 @@ export type ClientMessage =
   | { kind: 'session.create'; projectPath: string; prompt?: string; sessionName?: string }
   | { kind: 'session.clone'; tmuxTarget: string; sessionName?: string; prompt?: string }
   | { kind: 'panes.list' }
+  | { kind: 'panes.status' }
   | { kind: 'file.read'; path: string }
   | { kind: 'file.write'; path: string; content: string }
   | { kind: 'insight.requestSummary' }
@@ -132,7 +162,8 @@ export type ClientMessage =
   | { kind: 'generate.save'; type: 'skill' | 'agent'; filename: string; content: string }
   | { kind: 'agent.start'; projectPath: string; prompt?: string; label: string }
   | { kind: 'agent.resume'; prompt: string }
-  | { kind: 'agent.stop' };
+  | { kind: 'agent.stop' }
+  | { kind: 'thread.list' };
 
 export type AgentActivity =
   | 'working'           // Actively processing (thinking, tool use, etc.)

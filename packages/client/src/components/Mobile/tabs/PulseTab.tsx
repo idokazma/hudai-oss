@@ -2,6 +2,8 @@ import { useState, type KeyboardEvent } from 'react';
 import { StatusRing } from '../pulse/StatusRing.js';
 import { ActionCardStack } from '../pulse/ActionCardStack.js';
 import { PlanProgress } from '../pulse/PlanProgress.js';
+import { AdvisorMessages } from '../pulse/AdvisorMessages.js';
+import { useChatStore } from '../../../stores/chat-store.js';
 import { wsClient } from '../../../ws/ws-client.js';
 import { colors, fonts, alpha } from '../../../theme/tokens.js';
 
@@ -47,10 +49,11 @@ export function PulseTab() {
       >
         <StatusRing />
         <ActionCardStack />
+        <AdvisorMessages />
         <PlanProgress />
       </div>
 
-      {/* Ask anything input */}
+      {/* Bottom bar: Catch me up + input */}
       <div
         style={{
           flexShrink: 0,
@@ -61,12 +64,40 @@ export function PulseTab() {
           gap: 8,
         }}
       >
+        <button
+          onClick={() => {
+            useChatStore.getState().addMessage({
+              id: `user-catchup-${Date.now()}`,
+              sessionId: '',
+              timestamp: Date.now(),
+              role: 'user',
+              text: 'Catch me up',
+            });
+            wsClient.send({ kind: 'insight.requestSummary' });
+          }}
+          style={{
+            height: 40,
+            padding: '0 14px',
+            borderRadius: 20,
+            border: `1px solid ${alpha(colors.action.think, 0.3)}`,
+            background: alpha(colors.action.think, 0.08),
+            color: colors.action.think,
+            fontSize: 13,
+            fontFamily: fonts.body,
+            fontWeight: 600,
+            cursor: 'pointer',
+            flexShrink: 0,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Catch me up
+        </button>
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask anything about this session..."
+          placeholder="Ask anything..."
           style={{
             flex: 1,
             height: 40,
@@ -78,6 +109,7 @@ export function PulseTab() {
             fontFamily: fonts.mono,
             padding: '0 16px',
             outline: 'none',
+            minWidth: 0,
           }}
         />
         <button

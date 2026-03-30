@@ -4,7 +4,7 @@ import { useConfigStore } from '../../stores/config-store.js';
 import { wsClient } from '../../ws/ws-client.js';
 import { colors, alpha, fonts } from '../../theme/tokens.js';
 import { getAgentIcon } from '../shared/agent-icons.js';
-import type { AgentDefinition } from '@hudai/shared';
+import type { AgentDefinition, ServerMessage } from '@hudai/shared';
 
 function spawnAgentPrompt(agent: AgentDefinition): string {
   const subagentType = agent.rolePrompt ? 'general-purpose' : agent.name;
@@ -146,6 +146,9 @@ export function ConfigSlideOver() {
             </div>
           ) : (
             <>
+              {/* API Keys */}
+              <ApiKeysSection />
+
               {/* Suggestions */}
               {suggestions.length > 0 && (
                 <Section icon="💡" title="Suggestions">
@@ -273,7 +276,7 @@ export function ConfigSlideOver() {
                         <SpawnButton onClick={() => {
                           wsClient.send({
                             kind: 'command',
-                            command: { type: 'prompt', data: { text: spawnAgentPrompt(agent) } },
+                            command: { type: 'spawn_agent', data: { name: agent.name, prompt: spawnAgentPrompt(agent) } },
                           });
                           close();
                         }} />
@@ -347,11 +350,263 @@ export function ConfigSlideOver() {
                   </div>
                 </Section>
               )}
+              {/* Hooks */}
+              <HooksSection />
             </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+function HooksSection() {
+  const [status, setStatus] = useState<{ installed: boolean; hooksActive: boolean } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/hooks/status')
+      .then((r) => r.json())
+      .then(setStatus)
+      .catch(() => setStatus({ installed: false, hooksActive: false }));
+  }, []);
+
+  const install = async () => {
+    setLoading(true);
+    try {
+      await fetch('/api/hooks/install', { method: 'POST' });
+      setStatus({ installed: true, hooksActive: status?.hooksActive ?? false });
+    } catch {}
+    setLoading(false);
+  };
+
+  const uninstall = async () => {
+    setLoading(true);
+    try {
+      await fetch('/api/hooks/uninstall', { method: 'POST' });
+      setStatus({ installed: false, hooksActive: false });
+    } catch {}
+    setLoading(false);
+  };
+
+  return (
+    <Section icon="⚡" title="Real-time Hooks">
+      <div style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.text.muted, marginBottom: 8 }}>
+        Install Claude Code notification hooks for instant status detection (~50ms vs 2s polling).
+      </div>
+
+      {status && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {/* Status indicators */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: status.installed ? colors.status.success : colors.text.dimmed,
+            }} />
+            <span style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.text.secondary }}>
+              Hook config: {status.installed ? 'installed' : 'not installed'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: status.hooksActive ? colors.status.success : colors.text.dimmed,
+              boxShadow: status.hooksActive ? `0 0 6px ${colors.status.success}` : 'none',
+            }} />
+            <span style={{ fontSize: 10, fontFamily: fonts.mono, color: colors.text.secondary }}>
+              Hook connection: {status.hooksActive ? 'active' : 'inactive'}
+            </span>
+          </div>
+
+          {/* Action button */}
+          <button
+            onClick={status.installed ? uninstall : install}
+            disabled={loading}
+            style={{
+              marginTop: 4,
+              padding: '5px 12px',
+              fontSize: 10,
+              fontFamily: fonts.mono,
+              fontWeight: 600,
+              borderRadius: 4,
+              border: `1px solid ${status.installed ? alpha(colors.status.error, 0.4) : alpha(colors.status.success, 0.4)}`,
+              background: status.installed ? alpha(colors.status.error, 0.1) : alpha(colors.status.success, 0.1),
+              color: status.installed ? colors.status.errorLight : colors.status.successLight,
+              cursor: loading ? 'wait' : 'pointer',
+              opacity: loading ? 0.6 : 1,
+              alignSelf: 'flex-start',
+            }}
+          >
+            {loading ? '...' : status.installed ? 'Uninstall hooks' : 'Install hooks'}
+          </button>
+
+          {!status.installed && (
+            <div style={{ fontSize: 9, fontFamily: fonts.mono, color: colors.text.dimmed, marginTop: 2 }}>
+              Writes to ~/.claude/settings.json. Hooks fire on permission prompts, questions, and idle state.
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function ApiKeysSection() {
+  const [keysStatus, setKeysStatus] = useState({ geminiApiKey: false, openaiApiKey: false, claudeApiKey: false, telegramBotToken: false });
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [keyValue, setKeyValue] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const unsub = wsClient.onMessage((msg: ServerMessage) => {
+      if (msg.kind === 'settings.keys' || msg.kind === 'settings.saved') {
+        setKeysStatus(msg.keys);
+        setSaving(false);
+        if (msg.kind === 'settings.saved' && 'success' in msg && msg.success) {
+          setEditingKey(null);
+          setKeyValue('');
+        }
+      }
+    });
+    wsClient.send({ kind: 'settings.getKeys' });
+    return () => { unsub(); };
+  }, []);
+
+  const keys = [
+    { id: 'geminiApiKey', label: 'Gemini', isSet: keysStatus.geminiApiKey },
+    { id: 'openaiApiKey', label: 'OpenAI', isSet: keysStatus.openaiApiKey },
+    { id: 'claudeApiKey', label: 'Claude', isSet: keysStatus.claudeApiKey },
+    { id: 'telegramBotToken', label: 'Telegram', isSet: keysStatus.telegramBotToken },
+  ];
+
+  const handleSave = useCallback((keyId: string) => {
+    if (!keyValue.trim()) return;
+    setSaving(true);
+    wsClient.send({ kind: 'settings.saveKeys', keys: { [keyId]: keyValue.trim() } });
+  }, [keyValue]);
+
+  const handleClear = useCallback((keyId: string) => {
+    setSaving(true);
+    wsClient.send({ kind: 'settings.saveKeys', keys: { [keyId]: '' } });
+  }, []);
+
+  return (
+    <Section icon="🔑" title="API Keys">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {keys.map((k) => (
+          <div key={k.id}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '5px 0',
+            }}>
+              <div style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: k.isSet ? colors.status.successLight : colors.text.dimmed,
+                boxShadow: k.isSet ? `0 0 4px ${colors.status.successLight}` : 'none',
+                flexShrink: 0,
+              }} />
+              <span style={{
+                flex: 1,
+                fontSize: 12,
+                fontFamily: fonts.mono,
+                color: k.isSet ? colors.text.primary : colors.text.muted,
+              }}>
+                {k.label}
+              </span>
+              {k.isSet ? (
+                <button
+                  onClick={() => handleClear(k.id)}
+                  style={{
+                    padding: '2px 8px',
+                    fontSize: 10,
+                    fontFamily: fonts.mono,
+                    borderRadius: 3,
+                    border: `1px solid ${colors.status.errorLight}30`,
+                    background: `${colors.status.errorLight}15`,
+                    color: colors.status.errorLight,
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  Clear
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setEditingKey(editingKey === k.id ? null : k.id); setKeyValue(''); }}
+                  style={{
+                    padding: '2px 8px',
+                    fontSize: 10,
+                    fontFamily: fonts.mono,
+                    borderRadius: 3,
+                    border: `1px solid ${colors.border.subtle}`,
+                    background: 'transparent',
+                    color: colors.text.muted,
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  {editingKey === k.id ? 'Cancel' : 'Set'}
+                </button>
+              )}
+            </div>
+            {editingKey === k.id && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 4, marginBottom: 4 }}>
+                <input
+                  type="password"
+                  value={keyValue}
+                  onChange={(e) => setKeyValue(e.target.value)}
+                  placeholder={`Enter ${k.label} key...`}
+                  autoFocus
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSave(k.id); }}
+                  style={{
+                    flex: 1,
+                    padding: '5px 8px',
+                    background: colors.bg.primary,
+                    border: `1px solid ${colors.border.subtle}`,
+                    borderRadius: 4,
+                    color: colors.text.primary,
+                    fontFamily: fonts.mono,
+                    fontSize: 11,
+                    outline: 'none',
+                  }}
+                  onFocus={(e) => { e.currentTarget.style.borderColor = colors.accent.blue; }}
+                  onBlur={(e) => { e.currentTarget.style.borderColor = colors.border.subtle; }}
+                />
+                <button
+                  onClick={() => handleSave(k.id)}
+                  disabled={saving || !keyValue.trim()}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: 10,
+                    fontFamily: fonts.mono,
+                    fontWeight: 600,
+                    borderRadius: 3,
+                    border: 'none',
+                    background: (saving || !keyValue.trim()) ? colors.surface.hover : colors.accent.blue,
+                    color: colors.text.primary,
+                    cursor: (saving || !keyValue.trim()) ? 'not-allowed' : 'pointer',
+                    opacity: (saving || !keyValue.trim()) ? 0.5 : 1,
+                    flexShrink: 0,
+                  }}
+                >
+                  Save
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <div style={{
+        fontSize: 10,
+        color: colors.text.dimmed,
+        marginTop: 8,
+        lineHeight: 1.4,
+      }}>
+        Stored in ~/.hudai/secrets.json. Env vars take priority.
+      </div>
+    </Section>
   );
 }
 

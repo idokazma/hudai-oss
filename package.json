@@ -1,8 +1,16 @@
 {
   "name": "hudai",
   "version": "0.1.0",
-  "private": true,
-  "description": "Visual IDE for AI-powered development",
+  "packageManager": "npm@11.3.0",
+  "description": "A command center for AI code agents",
+  "author": "Ido Kazma",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/idokazma/hudai-oss.git"
+  },
+  "homepage": "https://github.com/idokazma/hudai-oss",
+  "bugs": "https://github.com/idokazma/hudai-oss/issues",
   "bin": {
     "hudai": "./packages/server/bin/hudai.js"
   },
@@ -20,6 +28,7 @@
     "build:shared": "npm run build -w @hudai/shared",
     "dev:telegram": "npm run dev -w @hudai/telegram-bot",
     "build:bundle": "npm run build -w @hudai/shared && npm run build -w @hudai/server && npm run build -w @hudai/client && mkdir -p packages/server/public && cp -r packages/client/dist/* packages/server/public/",
+    "start": "npm run build:bundle && node packages/server/bin/hudai.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

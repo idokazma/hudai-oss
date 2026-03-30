@@ -9,7 +9,24 @@ import { parseTestOutput } from '../parser/test-output-parser.js';
  *   "**1. `StepName`** — description"
  *   "1. **Step one** (details)"
  */
-function extractNumberedPlan(text: string): string[] {
+/**
+ * Heuristic: does a step look like an actionable plan step vs a data list item?
+ * Plan steps typically start with a verb or describe an action to take.
+ */
+const PLAN_VERB_RE = /^(add|build|create|configure|define|deploy|design|extract|fix|generate|handle|implement|install|integrate|migrate|modify|move|parse|refactor|remove|rename|replace|restructure|rewrite|run|set\s?up|test|update|upgrade|validate|verify|wire|write)\b/i;
+const PLAN_ACTION_RE = /^(ensure|make sure|check|clean up|convert|connect|extend|hook|introduce|merge|optimize|prepare|register|split|switch|transform|wrap)\b/i;
+
+function looksLikePlanStep(step: string): boolean {
+  // Starts with an action verb
+  if (PLAN_VERB_RE.test(step) || PLAN_ACTION_RE.test(step)) return true;
+  // Contains a file path or code reference — likely a plan step
+  if (/[/\\][\w.-]+\.\w+/.test(step)) return true;
+  // Contains arrow/colon suggesting "do X → Y" or "Step: description"
+  if (/[→=>:]/.test(step) && step.length > 15) return true;
+  return false;
+}
+
+export function extractNumberedPlan(text: string): string[] {
   const lines = text.split('\n');
   const steps: string[] = [];
   let expectedNext = 1;
@@ -35,6 +52,15 @@ function extractNumberedPlan(text: string): string[] {
       }
     }
   }
+
+  // Validate: at least half the steps should look like actionable plan steps
+  if (steps.length > 0) {
+    const actionableCount = steps.filter(looksLikePlanStep).length;
+    if (actionableCount < steps.length * 0.4) {
+      return []; // Looks like a regular numbered list, not a plan
+    }
+  }
+
   return steps;
 }
 
@@ -42,7 +68,7 @@ function extractNumberedPlan(text: string): string[] {
  * Extract plan steps from markdown headers (## Step 1, ### Phase 1, etc.)
  * Filters out generic structural headers and keeps actionable steps.
  */
-function extractMarkdownPlanSteps(text: string): string[] {
+export function extractMarkdownPlanSteps(text: string): string[] {
   const lines = text.split('\n');
   const steps: string[] = [];
   const SKIP = /^(Context|Overview|Summary|Plan|Background|Requirements|Notes|References|New File|Test Structure|Helpers|Key Implementation Details|Critical Files|Verification|Test Classes)$/i;
@@ -165,8 +191,11 @@ export function translateJsonlEntry(
           },
         }));
       } else if (block.type === 'text' && block.text.trim()) {
+        const textTrimmed = block.text.trim();
+        // Skip system injections that leak into assistant text blocks
+        if (textTrimmed.startsWith('<system-reminder') || textTrimmed.startsWith('<task-notification')) continue;
         // Detect inline numbered plans from assistant text (e.g. "1. Step one\n2. Step two\n...")
-        const planSteps = extractNumberedPlan(block.text);
+        const planSteps = extractNumberedPlan(textTrimmed);
         if (planSteps.length >= 3) {
           events.push(makeEvent(sessionId, ts, {
             category: 'reasoning',
@@ -179,7 +208,7 @@ export function translateJsonlEntry(
           category: 'control',
           type: 'raw.output',
           source: 'transcript',
-          data: { text: block.text.trim().slice(0, 500) },
+          data: { text: textTrimmed.slice(0, 2000) },
         }));
       }
     }
@@ -229,15 +258,20 @@ export function translateJsonlEntry(
       data: { preTokens, trigger },
     }));
   } else if (entry.type === 'user') {
-    // Top-level user messages — could be user prompts
+    // Top-level user messages — only genuine human prompts become task.start
+    // Rule: human input is string content that doesn't start with '<' (system-injected XML)
+    //       and isn't an array (tool results). This is the simplest reliable heuristic.
     const content = entry.message?.content;
-    if (typeof content === 'string' && content.trim()) {
-      events.push(makeEvent(sessionId, ts, {
-        category: 'control',
-        type: 'task.start',
-        source: 'transcript',
-        data: { prompt: content.trim().slice(0, 500) },
-      }));
+    if (typeof content === 'string') {
+      const trimmed = content.trim();
+      if (trimmed.length > 3 && !trimmed.startsWith('<')) {
+        events.push(makeEvent(sessionId, ts, {
+          category: 'control',
+          type: 'task.start',
+          source: 'transcript',
+          data: { prompt: trimmed.slice(0, 500) },
+        }));
+      }
     }
   }
 

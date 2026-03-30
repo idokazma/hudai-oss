@@ -58,7 +58,7 @@ export function useForceGraph(
 
   // Track structural identity of the graph (node count + edge count)
   // Only rebuild force layout when structure actually changes
-  const sessionFilterKey = (mapMode === 'session' || mapMode === 'journey') ? sessionTouchedFiles.size : 0;
+  const sessionFilterKey = mapMode === 'session' ? sessionTouchedFiles.size : 0;
   const isArchMode = mapMode === 'architecture';
   const archContainerCount = architecture?.containers.length ?? 0;
   const structureKey = useMemo(() => {
@@ -69,7 +69,7 @@ export function useForceGraph(
   // Compute display graph — only recalculates on structural changes
   const displayGraph = useMemo(() => {
     if (!graph) return null;
-    const sessionFilter = (mapMode === 'session' || mapMode === 'journey') ? sessionTouchedFiles : undefined;
+    const sessionFilter = mapMode === 'session' ? sessionTouchedFiles : undefined;
     return buildDisplayGraph(
       graph.nodes,
       graph.edges,
@@ -329,6 +329,10 @@ export function useForceGraph(
   // Agent spotlight — track current file, bubble up to visible group/container if collapsed
   useEffect(() => {
     if (!rendererRef.current) return;
+    if (mapMode === 'journey') {
+      rendererRef.current.setSpotlight(null);
+      return;
+    }
     if (!agentCurrentFile || !simRef.current || !graph) {
       rendererRef.current.setSpotlight(agentCurrentFile);
       return;
@@ -369,22 +373,75 @@ export function useForceGraph(
     } else {
       rendererRef.current.setSpotlight(agentCurrentFile);
     }
-  }, [agentCurrentFile, graph, architecture]);
+  }, [agentCurrentFile, graph, architecture, mapMode]);
+
+  // Journey mode: reset all node heat/visited/modified so the map starts clean
+  // Also hide spotlight and activity nodes
+  useEffect(() => {
+    if (mapMode === 'journey' && simRef.current) {
+      for (const node of simRef.current.nodeById.values()) {
+        node.heat = 0;
+        node.visited = false;
+        (node as any).modified = false;
+      }
+      if (rendererRef.current) {
+        rendererRef.current.setSpotlight(null);
+      }
+    }
+  }, [mapMode]);
 
   // Movement trail — resolve to visible nodes
+  // Journey trail from thread selection overrides live movement trail
   const movementTrail = useSessionStore((s) => s.movementTrail);
+  const journeyTrail = useGraphStore((s) => s.journeyTrail);
+  const journeyHighlightFiles = useGraphStore((s) => s.journeyHighlightFiles);
   useEffect(() => {
     if (!rendererRef.current) return;
+    const renderer = rendererRef.current;
+    const activeTrail = journeyTrail.length > 0 ? journeyTrail : movementTrail;
     if (!simRef.current || !graph) {
-      rendererRef.current.setTrail(movementTrail);
-      return;
+      renderer.setTrail(activeTrail);
+      renderer.setJourneyHighlight(new Set());
+      return () => { renderer.setJourneyHighlight(new Set()); };
     }
     const { nodeById } = simRef.current;
-    const resolvedTrail = movementTrail
+    const resolvedTrail = activeTrail
       .map((f) => nodeById.has(f) ? f : resolveToVisibleNode(f, graph.nodes, nodeById))
       .filter((f): f is string => f !== null);
-    rendererRef.current.setTrail(resolvedTrail);
-  }, [movementTrail, graph]);
+    renderer.setTrail(resolvedTrail);
+
+    // Set journey highlight on renderer — produces hover-like effect (ring + dim others)
+    // Highlight both the file nodes AND their parent group/folder nodes
+    if (journeyHighlightFiles.size > 0) {
+      const highlightIds = new Set<string>();
+      for (const [filePath] of journeyHighlightFiles) {
+        const nodeId = nodeById.has(filePath) ? filePath
+          : resolveToVisibleNode(filePath, graph.nodes, nodeById);
+        if (nodeId) highlightIds.add(nodeId);
+
+        // Also highlight parent group nodes
+        const fileNode = graph.nodes.find((n) => n.id === filePath);
+        if (fileNode) {
+          const parts = fileNode.group.split('/');
+          let current = '';
+          for (let i = 0; i < parts.length; i++) {
+            current = i === 0 ? parts[i] : current + '/' + parts[i];
+            const groupNodeId = `__group__${current}`;
+            if (nodeById.has(groupNodeId)) {
+              highlightIds.add(groupNodeId);
+            }
+          }
+        }
+      }
+      renderer.setJourneyHighlight(highlightIds);
+    } else {
+      renderer.setJourneyHighlight(new Set());
+    }
+
+    return () => { renderer.setJourneyHighlight(new Set()); };
+    // structureKey: re-resolve highlight IDs after groups expand/collapse (layout rebuild)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movementTrail, journeyTrail, journeyHighlightFiles, graph, structureKey]);
 
   // Failing files — bubble up to visible group nodes when collapsed
   const failingFiles = useGraphStore((s) => s.failingFiles);

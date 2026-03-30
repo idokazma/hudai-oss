@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { usePlanStore, type PlanTask } from '../../stores/plan-store.js';
+import { usePlanStore, type PlanTask, type PlanSource } from '../../stores/plan-store.js';
 import type { PlanFileSummary } from '@hudai/shared';
 import { useReplayStore } from '../../stores/replay-store.js';
 import { DocsPanel } from './DocsPanel.js';
@@ -27,15 +27,21 @@ const tabBtnStyle = (active: boolean): React.CSSProperties => ({
 function TaskItem({ task }: { task: PlanTask }) {
   const isDone = task.status === 'done';
   const isActive = task.status === 'active';
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = task.files.length > 0 || (task.detail && task.detail !== task.name);
 
   return (
-    <div style={{
-      padding: '8px 12px',
-      borderLeft: `3px solid ${isActive ? colors.accent.blue : isDone ? colors.status.success + '44' : colors.border.subtle}`,
-      background: isActive ? alpha(colors.accent.primary, 0.08) : 'transparent',
-      opacity: isDone ? 0.5 : 1,
-      transition: 'all 0.3s',
-    }}>
+    <div
+      onClick={() => hasDetail && setExpanded(!expanded)}
+      style={{
+        padding: '8px 12px',
+        borderLeft: `3px solid ${isActive ? colors.accent.blue : isDone ? colors.status.success + '44' : colors.border.subtle}`,
+        background: isActive ? alpha(colors.accent.primary, 0.08) : 'transparent',
+        opacity: isDone ? 0.5 : 1,
+        transition: 'all 0.3s',
+        cursor: hasDetail ? 'pointer' : 'default',
+      }}
+    >
       <div style={{
         display: 'flex',
         alignItems: 'center',
@@ -79,32 +85,60 @@ function TaskItem({ task }: { task: PlanTask }) {
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          flex: 1,
         }}>
           {task.name}
         </span>
+
+        {/* File count badge */}
+        {task.files.length > 0 && !expanded && (
+          <span style={{
+            fontSize: 9,
+            fontFamily: fonts.mono,
+            color: colors.text.muted,
+            flexShrink: 0,
+          }}>
+            {task.files.length}f
+          </span>
+        )}
       </div>
 
-      {/* File list for active task */}
-      {isActive && task.files.length > 0 && (
-        <div style={{
-          marginTop: 4,
-          marginLeft: 22,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 1,
-        }}>
-          {task.files.slice(-3).map((f) => (
-            <span key={f} style={{
+      {/* Expanded detail: description + files */}
+      {(expanded || isActive) && (
+        <div style={{ marginTop: 4, marginLeft: 22 }}>
+          {/* Description */}
+          {expanded && task.detail && task.detail !== task.name && (
+            <div style={{
               fontSize: 11,
-              fontFamily: fonts.mono,
               color: colors.text.muted,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+              lineHeight: 1.4,
+              marginBottom: task.files.length > 0 ? 4 : 0,
             }}>
-              {f.split('/').pop()}
-            </span>
-          ))}
+              {task.detail}
+            </div>
+          )}
+
+          {/* File list */}
+          {task.files.length > 0 && (
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 1,
+            }}>
+              {(expanded ? task.files : task.files.slice(-3)).map((f) => (
+                <span key={f} style={{
+                  fontSize: 11,
+                  fontFamily: fonts.mono,
+                  color: colors.text.muted,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {f.split('/').pop()}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -143,25 +177,26 @@ function formatRelativeDate(ms: number): string {
   return `${Math.floor(days / 30)}mo ago`;
 }
 
-function PlanItem({ plan, onLoad }: { plan: PlanFileSummary; onLoad: (filename: string) => void }) {
+function PlanItem({ plan, onLoad, loading }: { plan: PlanFileSummary; onLoad: (filename: string) => void; loading?: boolean }) {
   const isNew = Date.now() - plan.modifiedAt < 30 * 60 * 1000;
 
   return (
     <div
-      onClick={() => onLoad(plan.filename)}
+      onClick={() => !loading && onLoad(plan.filename)}
       style={{
         padding: '6px 12px',
-        cursor: 'pointer',
+        cursor: loading ? 'wait' : 'pointer',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 8,
         transition: 'background 0.15s',
-        background: isNew ? alpha(colors.accent.primary, 0.06) : 'transparent',
-        borderLeft: isNew ? `2px solid ${colors.accent.blue}` : '2px solid transparent',
+        background: loading ? alpha(colors.accent.blue, 0.12) : isNew ? alpha(colors.accent.primary, 0.06) : 'transparent',
+        borderLeft: loading ? `2px solid ${colors.accent.blue}` : isNew ? `2px solid ${colors.accent.blue}` : '2px solid transparent',
+        opacity: loading ? 0.7 : 1,
       }}
-      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = alpha(colors.accent.primary, 0.12); }}
-      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = isNew ? alpha(colors.accent.primary, 0.06) : 'transparent'; }}
+      onMouseEnter={(e) => { if (!loading) (e.currentTarget as HTMLElement).style.background = alpha(colors.accent.primary, 0.12); }}
+      onMouseLeave={(e) => { if (!loading) (e.currentTarget as HTMLElement).style.background = isNew ? alpha(colors.accent.primary, 0.06) : 'transparent'; }}
       title={plan.filename}
     >
       <span style={{
@@ -173,7 +208,7 @@ function PlanItem({ plan, onLoad }: { plan: PlanFileSummary; onLoad: (filename: 
         whiteSpace: 'nowrap',
         flex: 1,
       }}>
-        {plan.title}
+        {loading ? 'Loading...' : plan.title}
       </span>
       <span style={{
         fontSize: 10,
@@ -187,9 +222,77 @@ function PlanItem({ plan, onLoad }: { plan: PlanFileSummary; onLoad: (filename: 
   );
 }
 
+function PlanStepItem({ task, index }: { task: PlanTask; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = task.files.length > 0 || (task.detail && task.detail !== task.name);
+
+  return (
+    <div
+      onClick={() => hasDetail && setExpanded(!expanded)}
+      style={{
+        padding: '8px 12px',
+        borderLeft: `3px dashed ${colors.block.blueprint}`,
+        cursor: hasDetail ? 'pointer' : 'default',
+      }}
+    >
+      <span style={{
+        fontSize: 13,
+        fontFamily: fonts.mono,
+        color: colors.text.secondary,
+        lineHeight: 1.3,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        display: 'block',
+      }}>
+        {index + 1}. {task.name}
+      </span>
+
+      {/* Expanded detail: description + files */}
+      {expanded && (
+        <div style={{ marginTop: 4, marginLeft: 16 }}>
+          {task.detail && task.detail !== task.name && (
+            <div style={{
+              fontSize: 11,
+              color: colors.text.muted,
+              lineHeight: 1.4,
+              marginBottom: task.files.length > 0 ? 4 : 0,
+            }}>
+              {task.detail}
+            </div>
+          )}
+          {task.files.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {task.files.map((f) => (
+                <span key={f} style={{
+                  fontSize: 11,
+                  fontFamily: fonts.mono,
+                  color: colors.text.muted,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {f.split('/').pop()}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlanBrowser() {
   const plans = usePlanStore((s) => s.availablePlans);
+  const planSource = usePlanStore((s) => s.planSource);
   const [collapsed, setCollapsed] = useState(false);
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+
+  // Clear loading state when a plan is loaded
+  useEffect(() => {
+    if (planSource !== null) setLoadingPlan(null);
+  }, [planSource]);
 
   useEffect(() => {
     wsClient.send({ kind: 'plans.list' });
@@ -204,6 +307,7 @@ function PlanBrowser() {
   };
 
   const handleLoad = (filename: string) => {
+    setLoadingPlan(filename);
     wsClient.send({ kind: 'plans.load', filename });
   };
 
@@ -299,28 +403,7 @@ function PlanBrowser() {
               </div>
             )}
             {plans.filter((p) => p.source === 'project').map((plan) => (
-              <PlanItem key={plan.filename} plan={plan} onLoad={handleLoad} />
-            ))}
-            {/* Separator + global plans */}
-            {plans.some((p) => p.source === 'global') && (
-              <div style={{
-                padding: '4px 12px 2px',
-                fontSize: 9,
-                textTransform: 'uppercase',
-                letterSpacing: 1,
-                color: colors.text.muted,
-                opacity: 0.5,
-                ...(plans.some((p) => p.source === 'project') ? {
-                  marginTop: 4,
-                  borderTop: `1px solid ${colors.border.subtle}`,
-                  paddingTop: 6,
-                } : {}),
-              }}>
-                Global
-              </div>
-            )}
-            {plans.filter((p) => p.source === 'global').map((plan) => (
-              <PlanItem key={plan.filename} plan={plan} onLoad={handleLoad} />
+              <PlanItem key={plan.filename} plan={plan} onLoad={handleLoad} loading={loadingPlan === plan.filename} />
             ))}
           </>)}
         </div>
@@ -331,7 +414,7 @@ function PlanBrowser() {
 
 export function BuildQueue() {
   const tasks = usePlanStore((s) => s.tasks);
-  const hasExplicitPlan = usePlanStore((s) => s.hasExplicitPlan);
+  const planSource = usePlanStore((s) => s.planSource);
   const replayMode = useReplayStore((s) => s.mode);
   const [activeTab, setActiveTab] = useState<LeftTab>('queue');
 
@@ -351,7 +434,7 @@ export function BuildQueue() {
         flexShrink: 0,
       }}>
         <button onClick={() => setActiveTab('queue')} style={tabBtnStyle(activeTab === 'queue')}>
-          {replayMode === 'replay' ? 'Replay' : hasExplicitPlan ? 'Todo' : 'Queue'}
+          {replayMode === 'replay' ? 'Replay' : planSource === 'todo' ? 'Todo' : planSource === 'plan' ? 'Plan' : 'Queue'}
         </button>
         <button onClick={() => setActiveTab('docs')} style={tabBtnStyle(activeTab === 'docs')}>
           Docs
@@ -369,6 +452,35 @@ export function BuildQueue() {
 
       {/* Queue tab — Task list */}
       {activeTab === 'queue' && (<>
+      {/* Back to plan list */}
+      {planSource !== null && tasks.length > 0 && (
+        <button
+          onClick={() => usePlanStore.getState().clear()}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '5px 12px',
+            borderBottom: `1px solid ${colors.border.subtle}`,
+            background: 'none',
+            border: 'none',
+            borderBottomStyle: 'solid',
+            borderBottomWidth: 1,
+            borderBottomColor: colors.border.subtle,
+            color: colors.text.muted,
+            cursor: 'pointer',
+            fontSize: 10,
+            fontFamily: fonts.mono,
+            width: '100%',
+            flexShrink: 0,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = colors.text.primary; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = colors.text.muted; }}
+          title="Back to plan list"
+        >
+          ← Plans
+        </button>
+      )}
       <div style={{
         flex: 1,
         overflowY: 'auto',
@@ -386,6 +498,8 @@ export function BuildQueue() {
             <br />
             <span style={{ fontSize: 11 }}>Tasks auto-populate as the agent works</span>
           </div>
+        ) : planSource === 'plan' ? (
+          tasks.map((task, i) => <PlanStepItem key={task.id} task={task} index={i} />)
         ) : (
           [...tasks].reverse().map((task) => <TaskItem key={task.id} task={task} />)
         )}

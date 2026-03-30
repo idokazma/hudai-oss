@@ -1,10 +1,7 @@
 import { EventEmitter } from 'events';
+import { randomUUID } from 'node:crypto';
 import type { AVPEvent } from '@hudai/shared';
-
-/** Strip ANSI escape sequences */
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
-}
+import { stripAnsi } from './ansi-utils.js';
 
 export class ClaudeCodeParser extends EventEmitter {
   private sessionId: string;
@@ -244,6 +241,9 @@ export class ClaudeCodeParser extends EventEmitter {
       // Fall through to process this line normally
     }
 
+    // Skip Claude Code internal XML tags
+    if (/<\/?(?:task-notification|task-id|tool-use-id|antml)[^>]*>/.test(line)) return;
+
     // Skip decorative/noise
     if (/^[─═┌┐└┘├┤┬┴┼│╔╗╚╝║▐▛▜▝▘╌╭╮╰╯\s]+$/.test(line)) { this.flushNumberedPlan(); return; }
     if (/^[─╌\-]{5,}$/.test(line)) { this.flushNumberedPlan(); return; }
@@ -347,8 +347,23 @@ export class ClaudeCodeParser extends EventEmitter {
 
     // User prompt: ❯ text (but not menu selection like ❯ 1. Yes)
     if (line.startsWith('❯') && !/^❯\s*\d+\./.test(line)) {
-      const prompt = line.replace(/^❯\s*/, '').trim();
-      if (prompt && !this.emittedPrompts.has(prompt)) {
+      let prompt = line.replace(/^❯\s*/, '').trim();
+      // Strip XML tags, tool IDs, and artifacts
+      prompt = prompt
+        .replace(/<[^>]*>[\s\S]*?<\/[^>]*>/g, '')
+        .replace(/<[^>]+>/g, '')
+        .replace(/toolu_[a-zA-Z0-9_-]+/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      // Filter out non-human content: slash commands, task IDs, empty, too short
+      const isHumanPrompt = prompt.length > 3
+        && !/^\/\w+/.test(prompt)
+        && !/^[a-z0-9]{8,}$/i.test(prompt)  // bare IDs like byq76cax7
+        && !/^caveat:/i.test(prompt)
+        && !/^read the output file/i.test(prompt)
+        && !prompt.startsWith('{')
+        && !prompt.startsWith('[');
+      if (isHumanPrompt && !this.emittedPrompts.has(prompt)) {
         this.emittedPrompts.add(prompt);
         this.emitEvent({
           category: 'control',
@@ -440,7 +455,7 @@ export class ClaudeCodeParser extends EventEmitter {
 
     const event = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: randomUUID(),
       sessionId: this.sessionId,
       timestamp: Date.now(),
       source: 'tmux' as const,

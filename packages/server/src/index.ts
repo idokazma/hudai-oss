@@ -15,11 +15,12 @@ import { join } from 'node:path';
 import { execSync, fork, type ChildProcess } from 'node:child_process';
 // @ts-ignore — @lydell/node-pty has types but exports field doesn't resolve them
 import * as nodePty from '@lydell/node-pty';
-import type { AVPEvent, ClientMessage, ServerMessage, SessionState, AdvisorVerbosity, AdvisorScope } from '@hudai/shared';
+import type { AVPEvent, ClientMessage, ServerMessage, SessionState, AdvisorVerbosity, AdvisorScope, AgentActivity, SwarmSnapshot } from '@hudai/shared';
 import { WS_PORT } from '@hudai/shared';
 import { AgentProcess } from './pty/agent-process.js';
 import { ClaudeCodeParser } from './parser/claude-code-parser.js';
 import { CommandHandler } from './ws/command-handler.js';
+import { handleSwarmStatus } from './ws/swarm-handler.js';
 import { EventStore, SessionStore } from './persistence/event-store.js';
 import { getDb } from './persistence/db.js';
 import { loadSecrets, saveSecrets, getSecret, getKeysStatus } from './persistence/secrets.js';
@@ -46,7 +47,10 @@ import { createLLMProvider, detectProvider } from './llm/index.js';
 import type { LLMProvider } from './llm/llm-provider.js';
 import { InsightEngine } from './llm/insight-engine.js';
 import { CommanderChat } from './llm/commander-chat.js';
-import { SwarmRegistry } from './llm/swarm-registry.js';
+import { SessionMonitor } from './swarm/session-monitor.js';
+import { SwarmService } from './swarm/swarm-service.js';
+import type { SessionStatus } from './swarm/session-status.js';
+import { ThreadSummarizer } from './llm/thread-summarizer.js';
 import { generateSkill, generateAgent } from './llm/generator.js';
 import { LibraryBuilder } from './library/library-builder.js';
 import { IncrementalRefreshManager } from './refresh/refresh-manager.js';
@@ -68,6 +72,7 @@ const clients = new Set<WebSocket>();
 const graphBuilder = new GraphBuilder();
 
 // Active session state
+let _transitioning = false;
 let agent: AgentProcess | null = null;
 let parser: ClaudeCodeParser | null = null;
 let commandHandler: CommandHandler | null = null;
@@ -91,6 +96,7 @@ const tokenTracker = new TokenTracker();
 const loopDetector = new LoopDetector();
 let previewProxy: PreviewProxy | null = null;
 let settingsWatcher: FSWatcher | null = null;
+let settingsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const llmConfig = detectProvider({
   geminiApiKey: getSecret('geminiApiKey'),
   openaiApiKey: getSecret('openaiApiKey'),
@@ -115,7 +121,7 @@ let commanderChat = llmProvider && insightEngine
       () => sessionState,
       () => insightEngine!.intentHistory,
       () => graphBuilder.getGraph().edges,
-      () => swarmRegistry.buildSwarmSummary(),
+      () => swarmService.buildSwarmSummary(),
       () => sessionState.sessionId ? eventStore.getBySession(sessionState.sessionId) : [],
     )
   : null;
@@ -140,11 +146,19 @@ if (commanderChat && savedProactivePrompt) {
 if (insightEngine && commanderChat) {
   // Proactive insights disabled — chat reserved for user ↔ advisor + actionable prompts
 }
+let threadSummarizer = llmProvider ? new ThreadSummarizer(llmProvider) : null;
+if (threadSummarizer) {
+  threadSummarizer.onFlushReady = (msgs) => {
+    for (const msg of msgs) broadcast(msg);
+  };
+}
 let cachedPipelineLayer: PipelineLayer | null = null;
 let cachedLibraryManifest: LibraryManifest | null = null;
 const libraryCache = new Map<string, LibraryManifest>();
 let refreshManager: IncrementalRefreshManager | null = null;
-const swarmRegistry = new SwarmRegistry(sessionStore, eventStore, () => sessionState.sessionId, () => sessionState.tmuxTarget);
+const swarmService = new SwarmService(sessionStore, eventStore, () => sessionState.sessionId);
+swarmService.start();
+let sessionMonitor: SessionMonitor | null = null;
 const serviceEnabled = { llm: true, telegram: true, library: false };
 let sessionState: SessionState = {
   sessionId: '',
@@ -170,7 +184,11 @@ function broadcast(msg: ServerMessage) {
   const data = JSON.stringify(msg);
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) {
-      ws.send(data);
+      try {
+        ws.send(data);
+      } catch {
+        clients.delete(ws);
+      }
     }
   }
 }
@@ -198,6 +216,11 @@ function applyActivityUpdate(update: ActivityUpdate) {
   // Mark idle when agent transitions to waiting_input
   if (update.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
     idleNotified = true;
+    // Finalize active thread on idle
+    if (threadSummarizer) {
+      threadSummarizer.onActivityIdle();
+      for (const msg of threadSummarizer.flush()) broadcast(msg);
+    }
   }
 
   // Forward activity transitions to insight engine
@@ -233,14 +256,37 @@ function applyActivityUpdate(update: ActivityUpdate) {
   });
 }
 
-const seenPrompts = new Set<string>();
+/** TTL-based dedup cache — entries expire after 1 hour to prevent unbounded growth */
+const SEEN_PROMPTS_TTL = 60 * 60 * 1000;
+const SEEN_PROMPTS_MAX = 500;
+const seenPrompts = new Map<string, number>(); // prompt → timestamp
+
+function hasSeenPrompt(prompt: string): boolean {
+  const ts = seenPrompts.get(prompt);
+  if (ts && Date.now() - ts < SEEN_PROMPTS_TTL) return true;
+  return false;
+}
+
+function markPromptSeen(prompt: string): void {
+  seenPrompts.set(prompt, Date.now());
+  // Evict oldest entries if over max size
+  if (seenPrompts.size > SEEN_PROMPTS_MAX) {
+    const first = seenPrompts.keys().next().value;
+    if (first) seenPrompts.delete(first);
+  }
+}
+
+/** Type-safe event data accessor — avoids scattered `as any` casts */
+function eventData(event: AVPEvent): any {
+  return (event as any).data;
+}
 
 function handleEvent(event: AVPEvent) {
   // Deduplicate task.start events by prompt text (backfill + tmux parser overlap)
   if (event.type === 'task.start') {
-    const prompt = ((event as any).data?.prompt || '').trim();
-    if (prompt && seenPrompts.has(prompt)) return;
-    if (prompt) seenPrompts.add(prompt);
+    const prompt = (eventData(event)?.prompt || '').trim();
+    if (prompt && hasSeenPrompt(prompt)) return;
+    if (prompt) markPromptSeen(prompt);
   }
 
   // When hooks are active and we receive JSONL events, transition to 'working'
@@ -256,7 +302,7 @@ function handleEvent(event: AVPEvent) {
 
   sessionState.eventCount++;
   if (event.type === 'file.read' || event.type === 'file.edit' || event.type === 'file.create') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     sessionState.agentCurrentFile = filePath;
 
     // Update graph node heat/state
@@ -269,7 +315,7 @@ function handleEvent(event: AVPEvent) {
       broadcast({ kind: 'graph.update', updates: result.updates });
     }
   } else if (event.type === 'file.delete') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     const result = graphBuilder.applyFileActivity(filePath, 'delete');
     if (result.updates.length > 0) {
       broadcast({ kind: 'graph.update', updates: result.updates });
@@ -278,13 +324,13 @@ function handleEvent(event: AVPEvent) {
 
   // Notify refresh manager of file mutations
   if (event.type === 'file.edit' || event.type === 'file.create' || event.type === 'file.delete') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     if (serviceEnabled.library) refreshManager?.notifyFileChange(filePath);
   }
 
   // Detect memory file changes
   if (event.type === 'file.edit' || event.type === 'file.create') {
-    const filePath = (event as any).data.path;
+    const filePath = eventData(event).path;
     const memoryType = isMemoryFile(filePath);
     if (memoryType) {
       const memoryEvent: AVPEvent = {
@@ -307,7 +353,7 @@ function handleEvent(event: AVPEvent) {
 
   // Structured question from transcript — set waiting_answer state directly
   if (event.type === 'question.ask') {
-    const data = (event as any).data;
+    const data = eventData(event);
     updateSessionState({
       agentActivity: 'waiting_answer',
       agentActivityDetail: data.question,
@@ -315,9 +361,50 @@ function handleEvent(event: AVPEvent) {
     });
   }
 
+  // JSONL-based permission detection: when a tool_use arrives with prompted status,
+  // the agent is waiting for user approval. Skip when hooks are active — hooks are
+  // the authoritative source and the PreToolUse hook may have already auto-approved.
+  if (event.permission?.status === 'prompted' && event.source === 'transcript' && !hooksActive) {
+    const data = eventData(event);
+    const toolName = event.type === 'shell.run' ? 'Bash' :
+      event.type === 'file.read' ? 'Read' :
+      event.type === 'file.edit' ? 'Edit' :
+      event.type === 'file.create' ? 'Write' :
+      event.type === 'search.grep' ? 'Grep' :
+      event.type === 'search.glob' ? 'Glob' : 'Tool';
+    const detail = toolName === 'Bash'
+      ? `${toolName}: ${(data.command || '').slice(0, 300)}`
+      : `${toolName}: ${(data.path || data.pattern || '').slice(0, 300)}`;
+
+    updateSessionState({
+      agentActivity: 'waiting_permission',
+      agentActivityDetail: detail,
+    });
+
+    // Also emit permission.prompt event for tracking/suggestions
+    handleEvent({
+      id: crypto.randomUUID(),
+      sessionId: event.sessionId,
+      timestamp: Date.now(),
+      category: 'control',
+      type: 'permission.prompt',
+      source: 'transcript',
+      data: { tool: toolName, command: detail },
+    } as AVPEvent);
+  }
+
+  // Tool completion clears waiting_permission if we were waiting
+  if (event.type === 'tool.complete' && sessionState.agentActivity === 'waiting_permission') {
+    updateSessionState({
+      agentActivity: 'working',
+      agentActivityDetail: undefined,
+      agentActivityOptions: undefined,
+    });
+  }
+
   // Track permission prompts for suggestions
   if (event.type === 'permission.prompt') {
-    const tool = (event as any).data.tool;
+    const tool = eventData(event).tool;
     permissionStats.recordPrompt(tool);
     const suggestions = permissionStats.getNewSuggestions(3);
     for (const suggestion of suggestions) {
@@ -327,7 +414,7 @@ function handleEvent(event: AVPEvent) {
 
   // Track compaction events — enrich with event distribution
   if (event.type === 'context.compaction') {
-    const data = (event as any).data;
+    const data = eventData(event);
     // Enrich compaction event with event distribution
     try {
       const allEvents = eventStore.getByRange(event.sessionId, 0, event.timestamp);
@@ -346,11 +433,11 @@ function handleEvent(event: AVPEvent) {
 
   // Track sub-agent lifecycle
   if (event.type === 'subagent.start') {
-    const data = (event as any).data;
+    const data = eventData(event);
     activeSubagents.set(data.agentId, { type: data.agentType, startedAt: event.timestamp });
     updateBreadcrumb();
   } else if (event.type === 'subagent.end') {
-    const data = (event as any).data;
+    const data = eventData(event);
     activeSubagents.delete(data.agentId);
     updateBreadcrumb();
   }
@@ -358,7 +445,7 @@ function handleEvent(event: AVPEvent) {
   // Loop detection — check tool-use events for repeated patterns
   if (event.category === 'navigation' || event.category === 'mutation' || event.category === 'execution') {
     const toolName = event.type;
-    const primaryArg = (event as any).data?.path ?? (event as any).data?.command ?? (event as any).data?.pattern ?? '';
+    const primaryArg = eventData(event)?.path ?? eventData(event)?.command ?? eventData(event)?.pattern ?? '';
     const warning = loopDetector.recordAction(toolName, primaryArg, event.timestamp);
     if (warning) {
       const loopEvent: AVPEvent = {
@@ -392,6 +479,12 @@ function handleEvent(event: AVPEvent) {
     }
   }
 
+  // Thread summarizer: group events into threads and generate summaries
+  if (threadSummarizer) {
+    threadSummarizer.onEvent(event);
+    for (const msg of threadSummarizer.flush()) broadcast(msg);
+  }
+
   broadcast({ kind: 'event', event });
 }
 
@@ -404,6 +497,9 @@ function updateBreadcrumb() {
 }
 
 async function attachToPane(tmuxTarget: string) {
+  if (_transitioning) { console.warn('[attach] Skipping — transition in progress'); return ''; }
+  _transitioning = true;
+  try {
   // Clean up any existing connections (stream or tmux)
   if (agentHost) {
     stopAgent();
@@ -468,96 +564,51 @@ async function attachToPane(tmuxTarget: string) {
       lastPaneChangeAt = Date.now();
     }
     lastPaneContent = content;
-    broadcast({ kind: 'pane.content', content, caret });
-
-    // ── When hooks are active, skip pane-based activity detection ──
-    // Activity state comes from Claude Code's Notification hooks (POST /api/hooks/notification).
-    // Pane content is only used for PanePreview (live terminal display).
-    if (hooksActive) {
-      // Still do stale detection as a safety net — hooks should fire idle_prompt,
-      // but if they don't (e.g. hook misconfigured), fall back after 120s
-      const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
-      const hookStaleSec = (Date.now() - lastHookActivityAt) / 1000;
-      if (
-        staleSec >= 120 &&
-        hookStaleSec >= 120 &&
-        !idleNotified &&
-        sessionState.agentActivity === 'working'
-      ) {
-        idleNotified = true;
-        applyActivityUpdate({
-          activity: 'waiting_input',
-          detail: 'Agent appears idle (no output or hooks for 2 min)',
-        });
-      }
-      return;
+    if (paneChanged) {
+      broadcast({ kind: 'pane.content', content, caret });
     }
 
-    // ── Fallback: pane-based activity detection (when hooks are NOT active) ──
-    const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
+    // ── Pane-analyzer: idle detection only ──
+    // Permission and question detection come from JSONL (structured, reliable).
+    // Pane-analyzer only detects idle (❯ prompt) and working states.
     const analysis = analyzePaneContent(content);
-    if (
-      staleSec >= 120 &&
-      !idleNotified &&
-      analysis.activity === 'working'
-    ) {
-      idleNotified = true;
-      broadcast({
-        kind: 'insight.notification',
-        notification: {
-          id: `idle-${Date.now()}`,
-          text: 'Agent finished — waiting for next command',
-          severity: 'info',
-          triggeredBy: 'activity.idle',
-          timestamp: Date.now(),
-        },
-      });
-      updateSessionState({
-        agentActivity: 'waiting_input',
-        agentActivityDetail: 'Agent appears idle (no output for 2 min)',
-      });
-      return;
-    }
 
-    const activityChanged = analysis.activity !== sessionState.agentActivity;
-    const detailChanged = analysis.detail !== sessionState.agentActivityDetail;
-
-    if (activityChanged && sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
+    // Reset idle flag when agent starts working again
+    if (sessionState.agentActivity === 'waiting_input' && analysis.activity !== 'waiting_input' && paneChanged) {
       idleNotified = false;
     }
 
-    if (activityChanged && insightEngine) {
-      insightEngine.activityChanged(sessionState.agentActivity, analysis.activity);
-      if (commanderChat) {
-        for (const msg of commanderChat.flush()) {
-          broadcast(msg);
-        }
-      }
-    }
-
-    if (activityChanged || (detailChanged && (analysis.activity === 'waiting_answer' || analysis.activity === 'waiting_permission'))) {
-      if (analysis.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
-        idleNotified = true;
-      }
-
-      if (analysis.activity === 'waiting_permission' && sessionState.agentActivity !== 'waiting_permission') {
-        handleEvent({
-          id: crypto.randomUUID(),
-          sessionId: sessionState.sessionId,
-          timestamp: Date.now(),
-          category: 'control',
-          type: 'permission.prompt',
-          source: 'tmux',
-          data: {
-            tool: analysis.detail?.split(':')[0]?.trim() || 'Unknown',
-            command: analysis.detail || 'Permission requested',
-          },
-        } as AVPEvent);
-      }
+    if (analysis.activity === 'waiting_input' && sessionState.agentActivity !== 'waiting_input') {
+      // Agent went idle — update state
+      idleNotified = true;
       updateSessionState({
-        agentActivity: analysis.activity,
+        agentActivity: 'waiting_input',
         agentActivityDetail: analysis.detail,
-        agentActivityOptions: analysis.options,
+        agentActivityOptions: undefined,
+      });
+    } else if (analysis.activity === 'working' && sessionState.agentActivity === 'waiting_input') {
+      // Agent resumed working from idle
+      updateSessionState({
+        agentActivity: 'working',
+        agentActivityDetail: undefined,
+        agentActivityOptions: undefined,
+      });
+    }
+    // Do NOT override waiting_permission or waiting_answer — those are set by JSONL
+
+    // Stale detection safety net
+    const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
+    const hookStaleSec = hooksActive ? (Date.now() - lastHookActivityAt) / 1000 : Infinity;
+    if (
+      staleSec >= 120 &&
+      hookStaleSec >= 120 &&
+      !idleNotified &&
+      sessionState.agentActivity === 'working'
+    ) {
+      idleNotified = true;
+      applyActivityUpdate({
+        activity: 'waiting_input',
+        detail: 'Agent appears idle (no output for 2 min)',
       });
     }
   });
@@ -768,10 +819,9 @@ async function attachToPane(tmuxTarget: string) {
       const settingsLocalPath = join(paneCwd, '.claude', 'settings.local.json');
       // Ensure dir exists so watch doesn't fail
       await mkdir(join(paneCwd, '.claude'), { recursive: true });
-      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
       settingsWatcher = watch(settingsLocalPath, () => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(async () => {
+        if (settingsDebounceTimer) clearTimeout(settingsDebounceTimer);
+        settingsDebounceTimer = setTimeout(async () => {
           try {
             const root = graphBuilder.rootDir;
             if (!root) return;
@@ -831,10 +881,68 @@ async function attachToPane(tmuxTarget: string) {
     }
   }
 
+  // Start SessionMonitor (JSONL-based status detection — parallel with pane-analyzer)
+  // Priority: hooks > SessionMonitor (JSONL) > pane-analyzer (tmux regex)
+  if (paneCwd) {
+    try {
+      sessionMonitor = new SessionMonitor(sessionId, paneCwd, 'full');
+      // Status changes from JSONL → apply as activity update (when hooks aren't active)
+      sessionMonitor.on('status', (status: SessionStatus) => {
+        if (!hooksActive) {
+          applyActivityUpdate({
+            activity: status.activity,
+            detail: status.detail,
+            options: status.options,
+          });
+          if (status.currentFile) {
+            updateSessionState({ agentCurrentFile: status.currentFile });
+          }
+        }
+      });
+      await sessionMonitor.start();
+      swarmService.setAttachedSession(sessionId);
+      console.log('[session-monitor] Started JSONL-based status detection');
+    } catch (err) {
+      console.error('[session-monitor] Failed to start:', err);
+      sessionMonitor = null;
+    }
+  }
+
+  // Send recent events from previous sessions of this project so HumanShell is populated immediately
+  try {
+    const REPLAY_TIME_WINDOW = 12 * 60 * 60 * 1000;
+    // Use the latest event timestamp as anchor — "last active 12 hours" not "last 12 clock hours"
+    const latestTs = eventStore.getLatestProjectTimestamp(tmuxTarget);
+    const anchor = latestTs ?? Date.now();
+    const cutoff = anchor - REPLAY_TIME_WINDOW;
+    const projectEvents = eventStore.getByProject(tmuxTarget, cutoff, 2000);
+    console.log(`[attach] Project history: target=${tmuxTarget}, latestTs=${latestTs}, cutoff=${new Date(cutoff).toISOString()}, events=${projectEvents.length}, taskStarts=${projectEvents.filter(e => e.type === 'task.start').length}`);
+    if (projectEvents.length > 0) {
+      const eventsMsg: ServerMessage = { kind: 'replay.events', events: projectEvents };
+      broadcast(eventsMsg);
+      // Bootstrap thread summarizer from historical events
+      if (threadSummarizer) {
+        threadSummarizer.bootstrap(projectEvents, tmuxTarget);
+        for (const msg of threadSummarizer.flush()) broadcast(msg);
+      }
+    }
+  } catch (err) {
+    console.error('[attach] Failed to send project history:', err);
+  }
+
+  _transitioning = false;
   return sessionId;
+  } finally {
+    _transitioning = false;
+  }
 }
 
 function detachFromPane() {
+  if (sessionMonitor) {
+    sessionMonitor.stop();
+    sessionMonitor = null;
+    swarmService.setAttachedSession(null);
+  }
   if (transcriptWatcher) {
     transcriptWatcher.stop();
     transcriptWatcher = null;
@@ -852,6 +960,7 @@ function detachFromPane() {
     settingsWatcher.close();
     settingsWatcher = null;
   }
+  if (settingsDebounceTimer) { clearTimeout(settingsDebounceTimer); settingsDebounceTimer = null; }
   agent = null;
   parser = null;
   commandHandler = null;
@@ -873,6 +982,7 @@ function detachFromPane() {
   loopDetector.reset();
   insightEngine?.reset();
   commanderChat?.reset(); // Only clears pending messages + sessionId, preserves chat history
+  threadSummarizer?.reset();
   updateSessionState({
     sessionId: '',
     status: 'idle',
@@ -904,6 +1014,7 @@ function stopAgent() {
   loopDetector.reset();
   insightEngine?.reset();
   commanderChat?.reset();
+  threadSummarizer?.reset();
   updateSessionState({
     sessionId: '',
     status: 'idle',
@@ -921,6 +1032,9 @@ function stopAgent() {
  * and reads structured JSON events from stdout.
  */
 async function startAgent(options: { projectPath: string; prompt?: string; label: string }) {
+  if (_transitioning) { console.warn('[startAgent] Skipping — transition in progress'); return ''; }
+  _transitioning = true;
+  try {
   // Clean up any existing connections (tmux or stream)
   detachFromPane();
   stopAgent();
@@ -1006,7 +1120,11 @@ async function startAgent(options: { projectPath: string; prompt?: string; label
 
   broadcast({ kind: 'agent.status', running: true });
 
+  _transitioning = false;
   return sessionId;
+  } finally {
+    _transitioning = false;
+  }
 }
 
 // WebSocket route
@@ -1102,21 +1220,45 @@ fastify.register(async function (app) {
       socket.send(JSON.stringify(outputMsg));
     }
 
-    // Send recent events for the current session so timeline isn't empty on reconnect
-    // Only send the latest few events on reconnect — full history available via replay
-    const RECONNECT_EVENT_CAP = 4;
+    // Send recent events for the current session so HumanShell and timeline are populated on reconnect
+    // Cap at 2000 events and 12 hours to keep the payload reasonable
+    const RECONNECT_EVENT_CAP = 2000;
+    const RECONNECT_TIME_WINDOW = 12 * 60 * 60 * 1000; // 12 hours
     if (sessionState.sessionId && sessionState.status !== 'idle') {
       try {
-        const allEvents = eventStore.getByRange(sessionState.sessionId, 0, Number.MAX_SAFE_INTEGER);
-        const storedEvents = allEvents.length > RECONNECT_EVENT_CAP
-          ? allEvents.slice(-RECONNECT_EVENT_CAP)
-          : allEvents;
-        if (storedEvents.length > 0) {
-          const eventsMsg: ServerMessage = { kind: 'replay.events', events: storedEvents };
-          socket.send(JSON.stringify(eventsMsg));
+        const tmuxTarget = sessionState.tmuxTarget;
+        if (tmuxTarget) {
+          // Send cross-session project history (same as attachToPane)
+          const latestTs = eventStore.getLatestProjectTimestamp(tmuxTarget);
+          const anchor = latestTs ?? Date.now();
+          const cutoff = anchor - RECONNECT_TIME_WINDOW;
+          const projectEvents = eventStore.getByProject(tmuxTarget, cutoff, RECONNECT_EVENT_CAP);
+          if (projectEvents.length > 0) {
+            const eventsMsg: ServerMessage = { kind: 'replay.events', events: projectEvents };
+            socket.send(JSON.stringify(eventsMsg));
+          }
+        } else {
+          const cutoff = Date.now() - RECONNECT_TIME_WINDOW;
+          const allEvents = eventStore.getByRange(sessionState.sessionId, cutoff, Number.MAX_SAFE_INTEGER);
+          const storedEvents = allEvents.length > RECONNECT_EVENT_CAP
+            ? allEvents.slice(-RECONNECT_EVENT_CAP)
+            : allEvents;
+          if (storedEvents.length > 0) {
+            const eventsMsg: ServerMessage = { kind: 'replay.events', events: storedEvents };
+            socket.send(JSON.stringify(eventsMsg));
+          }
         }
       } catch (err) {
         console.error('[ws] Failed to send stored events on connect:', err);
+      }
+    }
+
+    // Send thread data if thread summarizer has state
+    if (threadSummarizer) {
+      const threads = threadSummarizer.getAll();
+      if (threads.length > 0) {
+        const threadMsg: ServerMessage = { kind: 'thread.list', threads };
+        socket.send(JSON.stringify(threadMsg));
       }
     }
 
@@ -1127,6 +1269,13 @@ fastify.register(async function (app) {
         switch (msg.kind) {
           case 'panes.list': {
             const panes = AgentProcess.listPanes();
+            const resp: ServerMessage = { kind: 'panes.list', panes };
+            socket.send(JSON.stringify(resp));
+            break;
+          }
+
+          case 'panes.status': {
+            const panes = AgentProcess.listPanesWithStatus();
             const resp: ServerMessage = { kind: 'panes.list', panes };
             socket.send(JSON.stringify(resp));
             break;
@@ -1149,10 +1298,41 @@ fastify.register(async function (app) {
               AgentProcess.killSession(msg.tmuxTarget);
               console.log(`[session] Killed tmux session for target: ${msg.tmuxTarget}`);
               // Broadcast updated swarm status
-              const snapshots = swarmRegistry.getSnapshots();
+              const snapshots = swarmService.getSnapshots();
               broadcast({ kind: 'swarm.status', sessions: snapshots });
             } catch (err) {
               const resp: ServerMessage = { kind: 'error', message: `Failed to kill session: ${err}` };
+              socket.send(JSON.stringify(resp));
+            }
+            break;
+          }
+
+          case 'swarm.command': {
+            const { tmuxTarget: target, command: swarmCmd } = msg;
+            try {
+              switch (swarmCmd.type) {
+                case 'approve':
+                  AgentProcess.sendTextToTarget(target, 'y');
+                  break;
+                case 'reject':
+                  AgentProcess.sendTextToTarget(target, 'n');
+                  break;
+                case 'prompt':
+                  AgentProcess.sendTextToTarget(target, swarmCmd.data.text);
+                  break;
+                case 'pause':
+                case 'cancel':
+                  AgentProcess.sendInterruptToTarget(target);
+                  break;
+                case 'resume':
+                  AgentProcess.sendTextToTarget(target, 'Continue with the previous task.');
+                  break;
+                default:
+                  console.warn(`[swarm.command] Unsupported command type: ${swarmCmd.type}`);
+              }
+              console.log(`[swarm.command] Sent ${swarmCmd.type} to ${target}`);
+            } catch (err) {
+              const resp: ServerMessage = { kind: 'error', message: `Failed to send swarm command: ${err}` };
               socket.send(JSON.stringify(resp));
             }
             break;
@@ -1213,6 +1393,41 @@ fastify.register(async function (app) {
           }
 
           case 'command':
+            // Spawn agent in a NEW tmux session (not the current one)
+            if (msg.command.type === 'spawn_agent') {
+              const spawnCmd = msg.command;
+              const currentTarget = sessionState.tmuxTarget;
+              const baseName = currentTarget ? currentTarget.split(':')[0] : 'hudai';
+              const agentName = spawnCmd.data.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+              const newSessionName = `${baseName}_${agentName}`;
+
+              // Get the project directory from the current pane
+              let projectPath = process.cwd();
+              if (currentTarget) {
+                try {
+                  projectPath = AgentProcess.getPaneCwd(currentTarget) || projectPath;
+                } catch {}
+              }
+
+              try {
+                const newTarget = AgentProcess.spawnAgent({
+                  projectPath,
+                  prompt: spawnCmd.data.prompt,
+                  sessionName: newSessionName,
+                });
+                console.log(`[spawn-agent] Created tmux session: ${newTarget}`);
+                // Broadcast updated panes list so the UI can see the new session
+                try {
+                  const panes = AgentProcess.listPanes();
+                  broadcast({ kind: 'panes.list', panes });
+                } catch {}
+              } catch (err) {
+                console.error(`[spawn-agent] Failed to create tmux session:`, err);
+                broadcast({ kind: 'error', message: `Failed to spawn agent: ${err}` });
+              }
+              break;
+            }
+
             if (sessionState.mode === 'stream' && streamCommandHandler) {
               streamCommandHandler.handle(msg.command);
               if (msg.command.type === 'pause' || msg.command.type === 'cancel') {
@@ -1303,7 +1518,15 @@ fastify.register(async function (app) {
               }
               insightEngine.requestSummary(events, sessionState, fullContext || undefined).then((summary) => {
                 if (summary) broadcast({ kind: 'insight.summary', summary });
-              });
+              }).catch((err) => console.error('[insight] Summary request failed:', err));
+            }
+            break;
+          }
+
+          case 'thread.list': {
+            if (threadSummarizer) {
+              const threads = threadSummarizer.getAll();
+              socket.send(JSON.stringify({ kind: 'thread.list', threads } satisfies ServerMessage));
             }
             break;
           }
@@ -1314,7 +1537,7 @@ fastify.register(async function (app) {
                 for (const chatMsg of commanderChat!.flush()) {
                   broadcast(chatMsg);
                 }
-              });
+              }).catch((err) => { console.error('[chat] User message failed:', err); });
             } else {
               // No LLM available — inform user
               const noLlm: ServerMessage = {
@@ -1503,7 +1726,7 @@ fastify.register(async function (app) {
                   () => sessionState,
                   () => insightEngine!.intentHistory,
                   () => graphBuilder.getGraph().edges,
-                  () => swarmRegistry.buildSwarmSummary(),
+                  () => swarmService.buildSwarmSummary(),
                   () => sessionState.sessionId ? eventStore.getBySession(sessionState.sessionId) : [],
                 );
                 // Restore verbosity + scope + prompt settings
@@ -1515,6 +1738,10 @@ fastify.register(async function (app) {
                 if (savedSP) commanderChat.setSystemPrompt(savedSP);
                 const savedPP = loadSecrets().advisorProactivePrompt;
                 if (savedPP) commanderChat.setProactivePrompt(savedPP);
+                threadSummarizer = new ThreadSummarizer(llmProvider);
+                threadSummarizer.onFlushReady = (msgs) => {
+                  for (const msg of msgs) broadcast(msg);
+                };
                 llmProvider.verify().then((ok) => {
                   updateSessionState({ llmStatus: ok ? 'connected' : 'error' });
                 });
@@ -1522,6 +1749,7 @@ fastify.register(async function (app) {
                 llmProvider = null;
                 insightEngine = null;
                 commanderChat = null;
+                threadSummarizer = null;
                 updateSessionState({ llmStatus: 'unavailable' });
               }
 
@@ -1680,9 +1908,13 @@ fastify.register(async function (app) {
           }
 
           case 'swarm.status': {
-            const snapshots = swarmRegistry.getSnapshots();
-            const resp: ServerMessage = { kind: 'swarm.status', sessions: snapshots };
-            socket.send(JSON.stringify(resp));
+            await handleSwarmStatus(socket, {
+              sessionState,
+              eventStore,
+              swarmService,
+              hooksActive,
+              lastHookActivityAt,
+            });
             break;
           }
 
@@ -1835,27 +2067,57 @@ fastify.register(async function (app) {
     const sessionName = target.split(':')[0];
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" window-size latest`, { stdio: 'ignore' }); } catch {}
 
-    // Disable alternate screen so future apps stay in normal buffer with scrollback
+    // Disable alternate screen so all output stays in the normal buffer with scrollback.
+    // Without this, Claude Code's TUI enters alternate screen and scrollback is lost.
+    // PTY output batching (16ms) handles flicker reduction instead.
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" -w alternate-screen off`, { stdio: 'ignore' }); } catch {}
+
+    // Ensure tmux keeps enough scrollback for history injection
+    try { execSync(`${tmuxBin} set-option -t "${sessionName}" history-limit 5000`, { stdio: 'ignore' }); } catch {}
 
     // Hide tmux status bar — Hudai provides its own chrome
     try { execSync(`${tmuxBin} set-option -t "${sessionName}" status off`, { stdio: 'ignore' }); } catch {}
 
-    // Spawn tmux attach inside a real PTY
+    // Inject scrollback history from tmux BEFORE starting the PTY stream.
+    // We capture history, send it, then spawn the PTY — sequential, no overlap.
+    try {
+      const history = execSync(
+        `${tmuxBin} capture-pane -t "${target}" -e -p -S -2000`,
+        { encoding: 'utf-8', maxBuffer: 1024 * 1024 }
+      );
+      if (history.trim() && socket.readyState === 1) {
+        socket.send(history.replace(/\n/g, '\r\n'));
+      }
+    } catch {
+      // capture-pane failed — continue without history
+    }
+
+    // Spawn tmux attach inside a real PTY (after history has been sent)
     const ptyProcess = nodePty.spawn(tmuxBin, ['attach-session', '-t', target], {
       cols: 80,
       rows: 24,
       env: { ...process.env, TERM: 'xterm-256color' },
     });
 
-    // Strip escape sequences that enable alternate screen or mouse tracking.
-    // This keeps xterm.js in normal buffer mode (with scrollback) and prevents
-    // mouse wheel events from being consumed by mouse reporting.
+    // Strip alternate screen + mouse tracking escapes so xterm stays in the
+    // normal buffer (preserving scrollback) and wheel events scroll the buffer.
     const STRIP_RE = /\x1b\[\?(9|47|1000|1002|1003|1004|1005|1006|1015|1047|1049)[hl]/g;
 
+    // Batch PTY output to reduce flicker (~16ms per frame).
+    let ptyBuffer = '';
+    let ptyFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushPty = () => {
+      ptyFlushTimer = null;
+      if (ptyBuffer && socket.readyState === 1) {
+        socket.send(ptyBuffer);
+      }
+      ptyBuffer = '';
+    };
+
     ptyProcess.onData((data: string) => {
-      if (socket.readyState === 1) {
-        socket.send(data.replace(STRIP_RE, ''));
+      ptyBuffer += data.replace(STRIP_RE, '');
+      if (!ptyFlushTimer) {
+        ptyFlushTimer = setTimeout(flushPty, 16);
       }
     });
 
@@ -1881,6 +2143,7 @@ fastify.register(async function (app) {
 
     socket.on('close', () => {
       console.log(`[terminal] WebSocket closed for target: ${target}`);
+      if (ptyFlushTimer) clearTimeout(ptyFlushTimer);
       ptyProcess.kill();
     });
   });
@@ -1889,84 +2152,19 @@ fastify.register(async function (app) {
 // Health check
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 
-// ── Pipeline PDF export ─────────────────────────────────────────────
-import { generatePipelinePdf } from './pipeline/pipeline-pdf.js';
 
-fastify.get('/api/pipeline/export', async (_request, reply) => {
-  const layer = cachedPipelineLayer ?? getDemoPipelines();
-  const projectName = sessionState.agentCurrentFile?.split('/')[0] || 'Hudai';
-  const pdf = await generatePipelinePdf(layer, projectName);
-  reply
-    .header('Content-Type', 'application/pdf')
-    .header('Content-Disposition', `attachment; filename="pipeline-audit-${Date.now()}.pdf"`)
-    .send(pdf);
-});
+// ── API Routes (extracted) ──────────────────────────────────────────
+import { registerFsRoutes } from './api/fs-routes.js';
+import { registerHooksRoutes } from './api/hooks-routes.js';
 
-// ── Filesystem path completion ──────────────────────────────────────
-import { completePath, scanRecentProjects } from './fs/path-completer.js';
-
-// Autocomplete: GET /api/fs/complete?path=/Users/ido/Des → matching directories
-fastify.get('/api/fs/complete', async (request) => {
-  const { path: partial } = request.query as { path?: string };
-  const suggestions = await completePath(partial || '');
-  return { suggestions };
-});
-
-// Recent projects: GET /api/fs/projects → past sessions + scanned git repos
-fastify.get('/api/fs/projects', async () => {
-  const sessions = sessionStore.list();
-  // Extract unique project paths from past sessions (stream mode has real paths, tmux has targets)
-  const pastPaths = sessions
-    .filter((s) => s.mode === 'stream' || s.projectPath.startsWith('/'))
-    .map((s) => s.projectPath)
-    .filter((p, i, arr) => arr.indexOf(p) === i); // deduplicate
-  const projects = await scanRecentProjects(pastPaths);
-  return { projects };
-});
-
-// ── Claude Code Hooks endpoint ─────────────────────────────────────
-// Claude Code posts Notification hook events here when configured with:
-//   { "hooks": { "Notification": [{ "matcher": "...", "hooks": [{ "type": "http", "url": "http://localhost:4200/api/hooks/notification" }] }] } }
-//
-// This replaces tmux pane-analyzer for activity state detection.
-fastify.post('/api/hooks/notification', async (request, reply) => {
-  const body = request.body as Record<string, any> | undefined;
-  if (!body || typeof body !== 'object') {
-    return reply.status(400).send({ error: 'Invalid request body' });
-  }
-
-  // Mark hooks as active on first notification received
-  if (!hooksActive) {
-    hooksActive = true;
-    console.log('[hooks] First notification received — hooks are now the primary activity source');
-  }
-  lastHookActivityAt = Date.now();
-
-  const update = hooksHandler.handleNotification({
-    matcher: body.matcher || body.type || '',
-    message: body.message,
-    tool: body.tool,
-    command: body.command,
-    question: body.question,
-    options: body.options,
-  });
-
-  if (update) {
-    applyActivityUpdate(update);
-  }
-
-  return { ok: true };
-});
-
-// Explicit "working" transition — called when Claude Code starts processing
-// (hooks don't fire a "working" notification, so we infer it from JSONL activity or this endpoint)
-fastify.post('/api/hooks/working', async (request, reply) => {
-  if (!hooksActive) {
-    hooksActive = true;
-  }
-  lastHookActivityAt = Date.now();
-  applyActivityUpdate({ activity: 'working', detail: undefined });
-  return { ok: true };
+registerFsRoutes(fastify, sessionStore);
+registerHooksRoutes(fastify, {
+  hooksHandler,
+  getHooksActive: () => hooksActive,
+  setHooksActive: (v) => { hooksActive = v; },
+  setLastHookActivityAt: (v) => { lastHookActivityAt = v; },
+  applyActivityUpdate,
+  getSessionMonitor: () => sessionMonitor,
 });
 
 // Serve pre-built client files (production mode)
@@ -1998,9 +2196,9 @@ const IDLE_THRESHOLD_MS = 5 * 60_000;
 // Track which sessions we've already alerted about (sessionId → alert type)
 // so we don't spam the same message every interval tick
 const swarmAlerted = new Map<string, string>();
-setInterval(() => {
+const swarmCheckTimer = setInterval(() => {
   if (!commanderChat || !serviceEnabled.llm) return;
-  const snapshots = swarmRegistry.getSnapshots();
+  const snapshots = swarmService.getSnapshots();
   for (const s of snapshots) {
     if (s.isAttached) continue;
     const alertKey = s.sessionId || s.projectPath;
@@ -2013,7 +2211,7 @@ setInterval(() => {
         'swarm.error',
       ).then(() => {
         for (const msg of commanderChat!.flush()) broadcast(msg);
-      });
+      }).catch((err) => console.error('[swarm-check] Proactive push failed:', err));
     } else if (s.lastEventAt && Date.now() - s.lastEventAt > IDLE_THRESHOLD_MS && s.status === 'running') {
       if (swarmAlerted.get(alertKey) === 'idle') continue;
       swarmAlerted.set(alertKey, 'idle');
@@ -2024,7 +2222,7 @@ setInterval(() => {
         'swarm.idle',
       ).then(() => {
         for (const msg of commanderChat!.flush()) broadcast(msg);
-      });
+      }).catch((err) => console.error('[swarm-check] Proactive push failed:', err));
     } else {
       // Session recovered (new activity or status change) — clear so we can alert again if it re-idles
       swarmAlerted.delete(alertKey);
@@ -2040,7 +2238,7 @@ const SUMMARY_INTERVALS: Record<string, number> = {
 };
 let lastAutoSummaryAt = 0;
 let lastAutoSummaryEventCount = 0;
-setInterval(() => {
+const autoSummaryTimer = setInterval(() => {
   if (!insightEngine || !commanderChat || !serviceEnabled.llm) return;
   if (sessionState.status !== 'running' && sessionState.status !== 'idle') return;
   if (!sessionState.sessionId) return;
@@ -2073,7 +2271,7 @@ setInterval(() => {
 
   insightEngine.requestSummary(events, sessionState, fullContext || undefined).then((summary) => {
     if (summary) broadcast({ kind: 'insight.summary', summary });
-  });
+  }).catch((err) => console.error('[insight] Summary request failed:', err));
 }, 60_000); // check every minute
 
 // Cleanup on shutdown
@@ -2084,34 +2282,52 @@ fastify.addHook('onClose', async () => {
   }
 });
 
-// Start server
-const port = WS_PORT;
-try {
-  await fastify.listen({ port, host: '0.0.0.0' });
-  console.log(`Hudai server running on http://localhost:${port}`);
+// Start server — try a range of ports if the default is in use
+const PORT_CANDIDATES = [WS_PORT, WS_PORT + 1, WS_PORT + 2, WS_PORT + 3];
 
-  // Load project-level data at startup — these don't need a session attached.
-  // Build codebase graph + load pipeline cache from server's working directory.
-  const serverCwd = process.cwd();
-  (async () => {
-    try {
-      const graph = await graphBuilder.build(serverCwd);
-      broadcast({ kind: 'graph.full', graph });
-      console.log(`[startup] Built codebase graph: ${graph.nodes.length} nodes`);
-    } catch (err) {
-      console.error('[startup] Graph build failed:', err);
-    }
-    try {
-      const cache = await loadCache(serverCwd);
-      if (cache && cache.pipelines.length > 0 && !cachedPipelineLayer) {
-        cachedPipelineLayer = { pipelines: cache.pipelines };
-        broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
-        console.log(`[startup] Loaded ${cache.pipelines.length} pipelines from cache`);
+let started = false;
+for (const port of PORT_CANDIDATES) {
+  try {
+    await fastify.listen({ port, host: '0.0.0.0' });
+    console.log(`Hudai server running on http://localhost:${port}`);
+    started = true;
+
+    // Load project-level data at startup
+    const serverCwd = process.cwd();
+    (async () => {
+      try {
+        const graph = await graphBuilder.build(serverCwd);
+        broadcast({ kind: 'graph.full', graph });
+        console.log(`[startup] Built codebase graph: ${graph.nodes.length} nodes`);
+      } catch (err) {
+        console.error('[startup] Graph build failed:', err);
       }
-    } catch { /* no cache — that's fine */ }
-  })();
-} catch (err) {
-  fastify.log.error(err);
+      try {
+        const cache = await loadCache(serverCwd);
+        if (cache && cache.pipelines.length > 0 && !cachedPipelineLayer) {
+          cachedPipelineLayer = { pipelines: cache.pipelines };
+          broadcast({ kind: 'pipeline.full', layer: cachedPipelineLayer });
+          console.log(`[startup] Loaded ${cache.pipelines.length} pipelines from cache`);
+        }
+      } catch { /* no cache — that's fine */ }
+    })();
+    break;
+  } catch (err: any) {
+    if (err?.code === 'EADDRINUSE') {
+      console.warn(`Port ${port} is in use, trying next...`);
+      continue;
+    }
+    fastify.log.error(err);
+    process.exit(1);
+  }
+}
+
+if (!started) {
+  console.error(
+    `\nFailed to start: ports ${PORT_CANDIDATES.join(', ')} are all in use.\n` +
+    `Kill the process using one of these ports and try again:\n` +
+    `  lsof -ti:${WS_PORT} | xargs kill\n`
+  );
   process.exit(1);
 }
 
@@ -2148,10 +2364,16 @@ startTelegramBot();
 
 // Clean up bot on server shutdown
 process.on('SIGINT', () => {
+  clearInterval(swarmCheckTimer);
+  clearInterval(autoSummaryTimer);
+  swarmService.stop();
   telegramBotProcess?.kill();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  clearInterval(swarmCheckTimer);
+  clearInterval(autoSummaryTimer);
+  swarmService.stop();
   telegramBotProcess?.kill();
   process.exit(0);
 });

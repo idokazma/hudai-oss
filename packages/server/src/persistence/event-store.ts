@@ -1,4 +1,4 @@
-import type { AVPEvent } from '@hudai/shared';
+import type { AVPEvent, ThreadSummary } from '@hudai/shared';
 import { getDb } from './db.js';
 
 export class EventStore {
@@ -6,6 +6,8 @@ export class EventStore {
   private queryBySessionStmt;
   private queryByRangeStmt;
   private queryLatestStmt;
+  private queryByProjectStmt;
+  private queryLatestProjectTimestampStmt;
 
   constructor() {
     const db = getDb();
@@ -20,6 +22,17 @@ export class EventStore {
     );
     this.queryLatestStmt = db.prepare(
       'SELECT * FROM events WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?'
+    );
+    this.queryByProjectStmt = db.prepare(
+      `SELECT DISTINCT e.id, e.session_id, e.timestamp, e.category, e.type, e.data FROM events e
+       JOIN sessions s ON e.session_id = s.id
+       WHERE s.project_path = ? AND e.timestamp >= ?
+       ORDER BY e.timestamp ASC LIMIT ?`
+    );
+    this.queryLatestProjectTimestampStmt = db.prepare(
+      `SELECT MAX(e.timestamp) as latest FROM events e
+       JOIN sessions s ON e.session_id = s.id
+       WHERE s.project_path = ?`
     );
   }
 
@@ -41,6 +54,18 @@ export class EventStore {
   getLatest(sessionId: string, limit: number): AVPEvent[] {
     const rows = this.queryLatestStmt.all(sessionId, limit) as any[];
     return rows.map(this.rowToEvent);
+  }
+
+  /** Get recent events across all sessions for a project path (tmux target) */
+  getByProject(projectPath: string, since: number, limit: number = 2000): AVPEvent[] {
+    const rows = this.queryByProjectStmt.all(projectPath, since, limit) as any[];
+    return rows.map(this.rowToEvent);
+  }
+
+  /** Get the timestamp of the most recent event for a project */
+  getLatestProjectTimestamp(projectPath: string): number | null {
+    const row = this.queryLatestProjectTimestampStmt.get(projectPath) as any;
+    return row?.latest ?? null;
   }
 
   private rowToEvent(row: any): AVPEvent {
@@ -134,6 +159,55 @@ export class SessionStore {
       claudeSessionId: r.claude_session_id || undefined,
       mode: r.mode || 'tmux',
       label: r.label || undefined,
+    }));
+  }
+}
+
+export class ThreadSummaryStore {
+  private upsertStmt;
+  private queryByProjectStmt;
+
+  constructor() {
+    const db = getDb();
+    this.upsertStmt = db.prepare(
+      `INSERT OR REPLACE INTO thread_summaries
+       (thread_id, project_path, prompt, started_at, completed_at, phase, summary, bullets, outcome, event_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    this.queryByProjectStmt = db.prepare(
+      `SELECT * FROM thread_summaries WHERE project_path = ? AND started_at >= ? ORDER BY started_at ASC LIMIT ?`
+    );
+  }
+
+  save(projectPath: string, thread: ThreadSummary) {
+    this.upsertStmt.run(
+      thread.threadId,
+      projectPath,
+      thread.prompt,
+      thread.startedAt,
+      thread.completedAt,
+      thread.phase,
+      thread.summary,
+      thread.bullets ? JSON.stringify(thread.bullets) : null,
+      thread.outcome ? JSON.stringify(thread.outcome) : null,
+      thread.eventCount,
+      Date.now(),
+    );
+  }
+
+  getByProject(projectPath: string, since: number, limit: number = 100): ThreadSummary[] {
+    const rows = this.queryByProjectStmt.all(projectPath, since, limit) as any[];
+    return rows.map((r) => ({
+      threadId: r.thread_id,
+      sessionId: '',
+      prompt: r.prompt,
+      startedAt: r.started_at,
+      completedAt: r.completed_at,
+      phase: r.phase,
+      summary: r.summary,
+      bullets: r.bullets ? JSON.parse(r.bullets) : null,
+      outcome: r.outcome ? JSON.parse(r.outcome) : null,
+      eventCount: r.event_count,
     }));
   }
 }

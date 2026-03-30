@@ -17,6 +17,8 @@ import { useLibraryStore } from '../stores/library-store.js';
 import { useChatStore } from '../stores/chat-store.js';
 import { usePreviewStore } from '../stores/preview-store.js';
 import { useSwarmStore } from '../stores/swarm-store.js';
+import { useThreadStore } from '../stores/thread-store.js';
+import { useConnectionStore } from '../stores/connection-store.js';
 
 let chatNotifCounter = 0;
 let lastChatActivity: string | null = null;
@@ -90,12 +92,6 @@ function handleActivityChat(
   }
 }
 
-function generateChatNotification(_event: any) {
-  // Chat is reserved for user ↔ advisor conversation and actionable prompts
-  // (permission requests, questions). All other notifications are visible
-  // in the timeline and status bar.
-}
-
 export function useWebSocket() {
   const setSession = useSessionStore((s) => s.setSession);
   const updateSessionFromEvent = useSessionStore((s) => s.updateFromEvent);
@@ -116,6 +112,10 @@ export function useWebSocket() {
   useEffect(() => {
     wsClient.connect();
 
+    const unsubState = wsClient.onStateChange((state) => {
+      useConnectionStore.getState().setState(state);
+    });
+
     const unsub = wsClient.onMessage((msg) => {
       const replayMode = useReplayStore.getState().mode;
 
@@ -128,6 +128,7 @@ export function useWebSocket() {
               clearPlan();
               clearNotifications();
               useInsightStore.getState().clear();
+              useThreadStore.getState().clear();
               // Reset chat notification state
               lastChatActivity = null;
               lastChatActivityDetail = null;
@@ -162,7 +163,6 @@ export function useWebSocket() {
           const totalEvents = useEventStore.getState().events.length;
           updateSessionFromEvent(msg.event, totalEvents);
           updatePlan(msg.event);
-          generateChatNotification(msg.event);
           // Track sub-agent lifecycle
           if (msg.event.type === 'subagent.start') {
             useAgentStore.getState().addAgent((msg.event as any).data, msg.event.timestamp);
@@ -321,6 +321,12 @@ export function useWebSocket() {
         case 'swarm.status':
           useSwarmStore.getState().setSessions(msg.sessions);
           break;
+        case 'thread.update':
+          useThreadStore.getState().upsertThread(msg.thread);
+          break;
+        case 'thread.list':
+          useThreadStore.getState().setThreads(msg.threads);
+          break;
         case 'error':
           console.error('[server]', msg.message);
           break;
@@ -329,6 +335,12 @@ export function useWebSocket() {
 
     return () => {
       unsub();
+      unsubState();
+      // Reset module-level chat state
+      chatNotifCounter = 0;
+      lastChatActivity = null;
+      lastChatActivityDetail = null;
+      seenChatGroups.clear();
       wsClient.disconnect();
     };
   }, [setSession, addEvent, clearEvents, setPanes, setPaneContent, setGraph, applyGraphUpdates, addActivity, updateSessionFromEvent, updatePlan, clearPlan, handleActivityChange, clearNotifications, setSessions, loadReplayEvents]);

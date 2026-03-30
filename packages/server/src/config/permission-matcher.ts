@@ -17,7 +17,9 @@ function matchesRule(toolName: string, toolArgs: Record<string, any>, rule: Perm
     const argValue = getPrimaryArg(toolName, toolArgs);
     if (!argValue) return false;
 
-    return simpleGlobMatch(rulePattern, argValue);
+    // File-path tools use path-aware glob (/ as separator); Bash uses full match
+    const isPath = toolName !== 'Bash';
+    return simpleGlobMatch(rulePattern, argValue, isPath);
   }
 
   // Simple tool name match (no arguments)
@@ -42,12 +44,15 @@ function getPrimaryArg(toolName: string, args: Record<string, any>): string | nu
 
 /**
  * Simple glob matching: supports * (any chars) and ** (any path)
+ * For Bash commands, * matches everything (including slashes) since
+ * command strings are not file paths. For file-path tools, * matches
+ * within a single path segment while ** matches across segments.
  */
-function simpleGlobMatch(pattern: string, value: string): boolean {
+function simpleGlobMatch(pattern: string, value: string, isPath = false): boolean {
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
     .replace(/\*\*/g, '<<DOUBLESTAR>>')
-    .replace(/\*/g, '[^/]*')
+    .replace(/\*/g, isPath ? '[^/]*' : '.*')
     .replace(/<<DOUBLESTAR>>/g, '.*');
 
   try {
