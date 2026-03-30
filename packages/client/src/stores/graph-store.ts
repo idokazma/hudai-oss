@@ -72,6 +72,8 @@ interface GraphStoreState {
   setPipelineLayer: (layer: PipelineLayer) => void;
   setPipelineAnalyzing: (analyzing: boolean) => void;
   clearPipeline: () => void;
+  /** Reset all graph and session-specific state (call on session switch) */
+  clear: () => void;
   updatePipeline: (updates: { blockId: string; patch: Partial<PipelineBlock> }[]) => void;
   setGraph: (graph: CodebaseGraph) => void;
   applyUpdates: (updates: Partial<FileNode>[]) => void;
@@ -210,6 +212,25 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   setPipelineLayer: (layer) => set({ pipelineLayer: layer, pipelineAnalyzing: false }),
   setPipelineAnalyzing: (analyzing) => set({ pipelineAnalyzing: analyzing }),
   clearPipeline: () => set({ pipelineLayer: null, pipelineAnalyzing: false }),
+
+  clear: () => set({
+    graph: null,
+    nodeMap: new Map(),
+    pathToId: new Map(),
+    activityNodes: [],
+    fileIndicators: new Map(),
+    failingFiles: new Set(),
+    sessionTouchedFiles: new Set(),
+    fileActivityCounts: new Map(),
+    heatTick: 0,
+    hottestFile: null,
+    architecture: null,
+    pipelineLayer: null,
+    pipelineAnalyzing: false,
+    highlightNodeId: null,
+    journeyTrail: [],
+    journeyHighlightFiles: new Map(),
+  }),
 
   updatePipeline: (updates) => {
     const { pipelineLayer } = get();
