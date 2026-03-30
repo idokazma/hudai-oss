@@ -52,6 +52,8 @@ export interface SwarmSnapshot {
   turnCount?: number;
   /** Number of tool invocations */
   toolCount?: number;
+  /** Options for question notifications (e.g., AskUserQuestion choices) */
+  activityOptions?: string[];
   /** tmux target for switching (null for non-tmux sessions) */
   tmuxTarget?: string;
   /** How the session was discovered */
@@ -155,6 +157,7 @@ export type ClientMessage =
   | { kind: 'preview.stop' }
   | { kind: 'service.toggle'; service: 'llm' | 'telegram' | 'library'; enabled: boolean }
   | { kind: 'swarm.status' }
+  | { kind: 'swarm.command'; tmuxTarget: string; command: SteeringCommand }
   | { kind: 'session.kill'; tmuxTarget: string }
   | { kind: 'permission.toggle'; tool: string; type: 'allow' | 'deny'; enabled: boolean }
   | { kind: 'generate.skill'; description: string }

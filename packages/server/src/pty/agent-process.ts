@@ -199,6 +199,22 @@ export class AgentProcess extends EventEmitter {
    * Kill a tmux session by target (e.g. "sessionName:0.0" or project path).
    * Extracts the session name and runs `tmux kill-session -t`.
    */
+  /**
+   * Send literal text + Enter to an arbitrary tmux target (for swarm commands).
+   */
+  static sendTextToTarget(target: string, text: string): void {
+    const escaped = text.replace(/'/g, "'\\''");
+    tmuxExec(`send-keys -t "${target}" -l '${escaped}'`);
+    tmuxExec(`send-keys -t "${target}" Enter`);
+  }
+
+  /**
+   * Send Escape (interrupt) to an arbitrary tmux target.
+   */
+  static sendInterruptToTarget(target: string): void {
+    tmuxExec(`send-keys -t "${target}" Escape`);
+  }
+
   static killSession(tmuxTarget: string): void {
     const sessionName = tmuxTarget.split(':')[0];
     tmuxExec(`kill-session -t "${sessionName}"`);
