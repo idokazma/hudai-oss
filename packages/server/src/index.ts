@@ -362,8 +362,9 @@ function handleEvent(event: AVPEvent) {
   }
 
   // JSONL-based permission detection: when a tool_use arrives with prompted status,
-  // the agent is waiting for user approval. Much more reliable than terminal scraping.
-  if (event.permission?.status === 'prompted' && event.source === 'transcript') {
+  // the agent is waiting for user approval. Skip when hooks are active — hooks are
+  // the authoritative source and the PreToolUse hook may have already auto-approved.
+  if (event.permission?.status === 'prompted' && event.source === 'transcript' && !hooksActive) {
     const data = eventData(event);
     const toolName = event.type === 'shell.run' ? 'Bash' :
       event.type === 'file.read' ? 'Read' :
