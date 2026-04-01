@@ -135,7 +135,7 @@ export function useWebSocket() {
               seenChatGroups.clear();
               chatNotifCounter = 0;
               // Chat history persists across session switches for swarm awareness
-              useGraphStore.getState().clearPipeline();
+              useGraphStore.getState().clear();
               useLibraryStore.getState().clear();
               // Request pipeline data after a short delay — the server loads cache async
               // and may not have broadcast it yet when this session.state arrives

@@ -39,10 +39,10 @@ export function stripAnsi(text: string): string {
   return text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
-/** Truncate text to fit Telegram's 4096 char limit, accounting for formatting overhead */
+/** Truncate text to fit Telegram's 4096 char limit, keeping the END (most recent output) */
 export function truncate(text: string, maxLen = 4000): string {
   if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 20) + '\n…(truncated)';
+  return '(truncated)…\n' + text.slice(-(maxLen - 16));
 }
 
 /** Format duration in seconds to human-readable */

@@ -111,6 +111,7 @@ export class MapRenderer {
   private canvas: HTMLCanvasElement | null = null;
   private lastEmptyDblClickZoomed = false; // toggle: first dbl-click zooms in, second resets
   private panRafId: number | null = null; // throttle pan renders to rAF
+  private _destroyed = false;
 
   // Hover state
   private hoveredNodeId: string | null = null;
@@ -465,6 +466,7 @@ export class MapRenderer {
   }
 
   private render() {
+    if (this._destroyed) return;
     const { currentNodes: nodes, currentNodeById: nodeById, currentEdges: edges } = this;
     const hovered = this.hoveredNodeId;
     const connected = this.connectedNodeIds;
@@ -1030,6 +1032,7 @@ export class MapRenderer {
   }
 
   destroy() {
+    this._destroyed = true;
     for (const { gfx, lbl } of this.activityPool) {
       gfx.destroy();
       lbl.destroy();
