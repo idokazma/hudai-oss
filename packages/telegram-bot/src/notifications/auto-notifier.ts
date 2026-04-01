@@ -118,36 +118,44 @@ export function setupAutoNotifier(
         state.lastActivity = activity;
 
         // Permission prompt → terminal snippet + Approve/Reject
+        // Delay slightly so the terminal content reflects the actual dialog
+        // (JSONL detection fires before the terminal UI renders the prompt)
         if (activity === 'waiting_permission' && prev !== 'waiting_permission') {
           if (config.silentMode) return;
-          const terminal = terminalSnippet(bridge);
-          const kb = new InlineKeyboard()
-            .text('✅ Approve', 'action:approve')
-            .text('❌ Reject', 'action:reject');
-          send(
-            `${projectTag(bridge)}🔐 <b>Permission Needed</b>\n\n${terminal}`,
-            { reply_markup: kb },
-          );
+          setTimeout(() => {
+            const terminal = terminalSnippet(bridge);
+            const kb = new InlineKeyboard()
+              .text('✅ Approve', 'action:approve')
+              .text('❌ Reject', 'action:reject');
+            send(
+              `${projectTag(bridge)}🔐 <b>Permission Needed</b>\n\n${terminal}`,
+              { reply_markup: kb },
+            );
+          }, 1500);
         }
 
         // Question → terminal snippet + option buttons
+        // Same delay — JSONL records the AskUserQuestion tool_use before the
+        // terminal displays the question dialog to the user
         if (activity === 'waiting_answer' && prev !== 'waiting_answer') {
           if (config.silentMode) return;
-          const terminal = terminalSnippet(bridge);
           const options = msg.state.agentActivityOptions ?? [];
+          setTimeout(() => {
+            const terminal = terminalSnippet(bridge);
 
-          const kb = new InlineKeyboard();
-          if (options.length > 0) {
-            options.forEach((opt, i) => {
-              kb.text(`${i + 1}. ${opt.slice(0, 30)}`, `answer:${i + 1}`);
-              if ((i + 1) % 2 === 0) kb.row();
-            });
-          }
+            const kb = new InlineKeyboard();
+            if (options.length > 0) {
+              options.forEach((opt, i) => {
+                kb.text(`${i + 1}. ${opt.slice(0, 30)}`, `answer:${i + 1}`);
+                if ((i + 1) % 2 === 0) kb.row();
+              });
+            }
 
-          send(
-            `${projectTag(bridge)}❓ <b>Question</b>\n\n${terminal}`,
-            { reply_markup: options.length > 0 ? kb : undefined },
-          );
+            send(
+              `${projectTag(bridge)}❓ <b>Question</b>\n\n${terminal}`,
+              { reply_markup: options.length > 0 ? kb : undefined },
+            );
+          }, 1500);
         }
 
         // Reset idle flag when agent starts working again
