@@ -568,9 +568,10 @@ async function attachToPane(tmuxTarget: string) {
       broadcast({ kind: 'pane.content', content, caret });
     }
 
-    // ── Pane-analyzer: idle detection only ──
-    // Permission and question detection come from JSONL (structured, reliable).
-    // Pane-analyzer only detects idle (❯ prompt) and working states.
+    // ── Pane-analyzer: idle detection + permission/question safety net ──
+    // Primary permission/question detection comes from JSONL (structured, reliable).
+    // Pane-analyzer acts as a safety net — if the terminal shows a permission dialog
+    // or question that JSONL/hooks didn't catch, we still detect and notify.
     const analysis = analyzePaneContent(content);
 
     // Reset idle flag when agent starts working again
@@ -594,7 +595,21 @@ async function attachToPane(tmuxTarget: string) {
         agentActivityOptions: undefined,
       });
     }
-    // Do NOT override waiting_permission or waiting_answer — those are set by JSONL
+
+    // Safety net: if terminal shows permission/question but current state doesn't reflect it,
+    // update state so Telegram and Hudai UI are notified. This catches cases where the
+    // auto-approve hook lets a destructive command through or hooks/JSONL missed the event.
+    if (analysis.activity === 'waiting_permission' && sessionState.agentActivity !== 'waiting_permission') {
+      applyActivityUpdate({
+        activity: 'waiting_permission',
+        detail: analysis.detail || 'Permission requested (detected from terminal)',
+      });
+    } else if (analysis.activity === 'waiting_answer' && sessionState.agentActivity !== 'waiting_answer') {
+      applyActivityUpdate({
+        activity: 'waiting_answer',
+        detail: analysis.detail || 'Agent has a question (detected from terminal)',
+      });
+    }
 
     // Stale detection safety net
     const staleSec = (Date.now() - lastPaneChangeAt) / 1000;
